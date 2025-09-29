@@ -1,4 +1,4 @@
-// server.ts
+
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";

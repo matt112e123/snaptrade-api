@@ -273,27 +273,17 @@ async function handleConnect(req: express.Request, res: express.Response) {
     // store secret for the polling endpoints
     putSecret(userId, userSecret);
 
-    const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
-    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback
-
-    // Append userId to BOTH
-    const mobileURL = new URL(mobileBase);
-    mobileURL.searchParams.set("userId", userId);
-
+    const mobileRedirect = requireEnv("SNAPTRADE_REDIRECT_URI"); // apexmarkets://snaptrade-callback
+    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileRedirect; 
     const webURL = new URL(webBase);
     webURL.searchParams.set("userId", userId);
 
-    // only accept valid URLs from query
     const tryUrl = (v: unknown): string | "" => {
       if (typeof v !== "string" || !v.trim()) return "";
       try { return new URL(v).toString(); } catch { return ""; }
     };
     const custom = tryUrl(req.query.customRedirect) || tryUrl(req.query.redirect);
-
-    // Decide: web or mobile
-    const requested =
-      custom ||
-      (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
+    const requested = custom || (req.query.web === "1" ? webURL.toString() : mobileRedirect);
 
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
       userId,
@@ -313,12 +303,25 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-    res.redirect(302, redirectURI);
+    // 🔑 Key part: decide format
+    if (req.query.web === "1") {
+      // Web → send redirect
+      res.redirect(302, redirectURI);
+    } else {
+      // Mobile → return JSON like before
+      res.json({
+        redirectURI,
+        url: redirectURI,
+        userId,
+        userSecret,
+      });
+    }
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
 }
+
 
 
 app.get("/connect", handleConnect);

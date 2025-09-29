@@ -1,7 +1,9 @@
+// server.ts
 import "dotenv/config";
-import express, { Request, Response, NextFunction } from "express";
+import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
 import os from "os";
+import cors from "cors";
 
 /* ------------------------ config / helpers ------------------------ */
 
@@ -15,7 +17,6 @@ function requireEnv(name: string): string {
 }
 
 function mkClient() {
-  // Do NOT pass basePath unless Snaptrade told you to.
   return new Snaptrade({
     clientId: requireEnv("SNAPTRADE_CLIENT_ID"),
     consumerKey: requireEnv("SNAPTRADE_CONSUMER_KEY"),
@@ -32,16 +33,6 @@ function lanIPs(): string[] {
   return ips;
 }
 
-function pickRedirectUrl(d: any): string | undefined {
-  return (
-    d?.redirectURI ??
-    d?.redirectUri ??
-    d?.loginRedirectURI ??
-    d?.loginRedirectUri ??
-    (typeof d === "string" ? d : undefined)
-  );
-}
-
 function errPayload(err: any) {
   const status = err?.response?.status;
   const headers = err?.response?.headers;
@@ -51,24 +42,12 @@ function errPayload(err: any) {
   return { status, headers, data, message };
 }
 
-/* ---------- robust value pickers (handle schema variations) -------- */
-
 function pickNumber(...candidates: any[]): number {
   for (const v of candidates) {
     if (typeof v === "number" && Number.isFinite(v)) return v;
     if (typeof v === "string" && v.trim() && !Number.isNaN(Number(v))) return Number(v);
     if (v && typeof v === "object") {
-      for (const k of [
-        "amount",
-        "value",
-        "price",
-        "market_value",
-        "marketValue",
-        "cash",
-        "buying_power",
-        "buyingPower",
-        "total",
-      ]) {
+      for (const k of ["amount","value","price","market_value","marketValue","cash","buying_power","buyingPower","total"]) {
         const n = (v as any)[k];
         if (typeof n === "number" && Number.isFinite(n)) return n;
         if (typeof n === "string" && n.trim() && !Number.isNaN(Number(n))) return Number(n);
@@ -79,17 +58,11 @@ function pickNumber(...candidates: any[]): number {
 }
 
 function pickStringStrict(...candidates: any[]): string {
-  for (const v of candidates) {
-    if (typeof v === "string" && v.trim()) return v.trim();
-  }
+  for (const v of candidates) if (typeof v === "string" && v.trim()) return v.trim();
   return "";
 }
 
 /* ----------------- symbol/name extractors (ticker-first) ---------- */
-/* Your holdings look like:
-   position.symbol (outer) -> { id: UUID, symbol: { symbol: "GOOGL", raw_symbol: "GOOGL", description: "..." } }
-   So we must check BOTH s.* and s.symbol.* fields for strings.
-*/
 
 function extractDisplaySymbol(p: any): string {
   const s = p?.symbol;
@@ -97,54 +70,28 @@ function extractDisplaySymbol(p: any): string {
   const o = p?.option_symbol;
 
   const candidates: any[] = [
-    // 1) preferred “universal” symbol strings
     u?.symbol, u?.ticker,
-    // 2) outer symbol (stringy fields)
     s?.symbol, s?.ticker, s?.code, s?.raw_symbol, s?.rawSymbol,
-    // 3) **inner** symbol object’s stringy fields (this is what your payload has)
     s?.symbol?.symbol, s?.symbol?.ticker, s?.symbol?.code, s?.symbol?.raw_symbol, s?.symbol?.rawSymbol,
-    // 4) plain-string symbol
     typeof s === "string" ? s : "",
-    // 5) option symbol object/string
     (typeof o === "string" ? o : o?.symbol),
   ];
 
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) return c.trim().toUpperCase();
-  }
+  for (const c of candidates) if (typeof c === "string" && c.trim()) return c.trim().toUpperCase();
 
-  // Fallback to any stable id so we never drop the row
-  const idCandidates: any[] = [
-    u?.id,
-    s?.id,
-    p?.symbol_id,
-    p?.security_id,
-    p?.instrument_id,
-    p?.id,
-  ];
-  for (const c of idCandidates) {
-    if (typeof c === "string" && c.trim()) return c.trim().toUpperCase();
-  }
+  const idCandidates: any[] = [u?.id, s?.id, p?.symbol_id, p?.security_id, p?.instrument_id, p?.id];
+  for (const c of idCandidates) if (typeof c === "string" && c.trim()) return c.trim().toUpperCase();
   return "UNKNOWN";
 }
 
 function extractDisplayName(p: any): string {
   const s = p?.symbol;
   const u = p?.universal_symbol;
-
   const candidates: any[] = [
-    // inner description first (matches your payload)
-    s?.symbol?.description, s?.symbol?.name,
-    // outer description/name
-    s?.description, s?.name,
-    // universal
-    u?.description, u?.name,
-    // generic fallbacks
-    p?.description, p?.longName,
+    s?.symbol?.description, s?.symbol?.name, s?.description, s?.name,
+    u?.description, u?.name, p?.description, p?.longName,
   ];
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim()) return c.trim();
-  }
+  for (const c of candidates) if (typeof c === "string" && c.trim()) return c.trim();
   return extractDisplaySymbol(p);
 }
 
@@ -155,23 +102,13 @@ function isCryptoPosition(p: any): boolean {
   return /^(BTC|ETH|SOL|DOGE|ADA|USDT|USDC|BNB)\b/i.test(sym);
 }
 
-/* ---- find a plausible positions array anywhere within holdings ---- */
-
 function findPositionsArray(root: any): any[] {
   const hits: any[][] = [];
-
-  const looksLikePosition = (o: any) => {
-    if (!o || typeof o !== "object") return false;
-    return (
-      "symbol" in o ||
-      "universal_symbol" in o ||
-      "option_symbol" in o ||
-      "symbol_id" in o ||
-      "security_id" in o ||
-      "instrument_id" in o ||
-      (typeof o.id === "string" && o.id.length >= 8)
-    );
-  };
+  const looksLikePosition = (o: any) =>
+    !!o && typeof o === "object" &&
+    ("symbol" in o || "universal_symbol" in o || "option_symbol" in o ||
+     "symbol_id" in o || "security_id" in o || "instrument_id" in o ||
+     (typeof o.id === "string" && o.id.length >= 8));
 
   const walk = (x: any) => {
     if (Array.isArray(x)) {
@@ -186,18 +123,56 @@ function findPositionsArray(root: any): any[] {
   return hits.sort((a, b) => b.length - a.length)[0] || [];
 }
 
+/* ------------------ short-TTL secret cache (no DB) ---------------- */
+
+type SecretRow = { secret: string; expiresAt: number };
+const USER_SECRETS = new Map<string, SecretRow>();
+const SECRET_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function putSecret(userId: string, userSecret: string) {
+  USER_SECRETS.set(userId, { secret: userSecret, expiresAt: Date.now() + SECRET_TTL_MS });
+}
+function getSecret(userId: string): string {
+  const row = USER_SECRETS.get(userId);
+  if (!row) return "";
+  if (Date.now() > row.expiresAt) { USER_SECRETS.delete(userId); return ""; }
+  return row.secret;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of USER_SECRETS) if (now > v.expiresAt) USER_SECRETS.delete(k);
+}, 60_000);
+
 /* ------------------------------ app ------------------------------ */
 
 const app = express();
-const USER_SECRETS = new Map<string, string>();
-
 app.use(express.json());
 
-// request log
-app.use((req: Request, _res: Response, next: NextFunction) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
+/* ------------------------------- CORS ------------------------------ */
+
+const defaultOrigins = [
+  process.env.FRONTEND_ORIGIN || "https://www.theapexinvestor.com",
+  "https://theapexinvestor.com",
+  "https://www.theapexinvestor.net",
+  "https://theapexinvestor.net",
+  "http://localhost:3000", "http://127.0.0.1:3000",
+  "http://localhost:5173", "http://127.0.0.1:5173",
+  "http://localhost:5501", "http://127.0.0.1:5501",
+];
+const envOrigins = (process.env.CORS_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean);
+const allowedOrigins = new Set<string>([...defaultOrigins, ...envOrigins]);
+
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true);
+    cb(null, allowedOrigins.has(origin));
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Accept", "Authorization"],
+  credentials: false,
+}));
+app.use((_, res, next) => { res.setHeader("Vary", "Origin"); next(); });
+app.use((req, res, next) => { if (req.method === "OPTIONS") return res.sendStatus(204); next(); });
 
 /* --------------------------- diagnostics -------------------------- */
 
@@ -209,8 +184,10 @@ app.get("/whoami", (_req, res) => {
     SNAPTRADE_CLIENT_ID: process.env.SNAPTRADE_CLIENT_ID ? "(set)" : "(missing)",
     hasConsumerKey: Boolean(process.env.SNAPTRADE_CONSUMER_KEY),
     SNAPTRADE_REDIRECT_URI: process.env.SNAPTRADE_REDIRECT_URI ? "(set)" : "(missing)",
+    SNAPTRADE_WEB_REDIRECT_URI: process.env.SNAPTRADE_WEB_REDIRECT_URI ? "(set)" : "(missing)",
     now: new Date().toISOString(),
     lanIPs: lanIPs(),
+    allowedOrigins: Array.from(allowedOrigins),
   });
 });
 
@@ -264,9 +241,13 @@ app.get("/debug/register", async (_req, res) => {
 });
 
 /* ------------------------- SnapTrade connect ---------------------- */
-
-app.get("/connect", async (req, res) => {
-  console.log("🔗 /connect start", { query: req.query });
+/**
+ * NAVIGATE here from the browser (not fetch/XHR):
+ *   /connect?fresh=1&web=1        # web callback
+ *   /connect?fresh=1              # mobile deep link callback
+ * Optional (dev only): ?json=1 when ALLOW_JSON=1
+ */
+async function handleConnect(req: express.Request, res: express.Response) {
   try {
     const snaptrade = mkClient();
     const fresh = String(req.query.fresh || "") === "1";
@@ -278,50 +259,62 @@ app.get("/connect", async (req, res) => {
       userId = `dev-${Date.now()}`;
       const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
       userSecret = (reg?.data as any)?.userSecret;
-      console.log("🆕 registered user", { userId, haveSecret: Boolean(userSecret) });
-      if (!userSecret) {
-        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-      }
+      if (!userSecret) return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
     } else {
-      // ensure user exists (idempotent)
-      try {
-        await snaptrade.authentication.registerSnapTradeUser({ userId });
-      } catch (e: any) {
-        if (![400, 409].includes(e?.response?.status)) throw e;
-      }
+      try { await snaptrade.authentication.registerSnapTradeUser({ userId }); }
+      catch (e: any) { if (![400, 409].includes(e?.response?.status)) throw e; }
     }
 
-    USER_SECRETS.set(userId, userSecret);
+    // store secret for the polling endpoints
+    putSecret(userId, userSecret);
+
+    const mobileRedirect = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
+    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileRedirect; // e.g. https://www.theapexinvestor.com/snaptrade-callback
+    const webURL = new URL(webBase);
+    webURL.searchParams.set("userId", userId); // callback page can poll /realtime/linked
+
+    // only accept valid URLs from query to avoid "redirect=1" bugs
+    const tryUrl = (v: unknown): string | "" => {
+      if (typeof v !== "string" || !v.trim()) return "";
+      try { return new URL(v).toString(); } catch { return ""; }
+    };
+    const custom = tryUrl(req.query.customRedirect) || tryUrl(req.query.redirect);
+    const requested = custom || (req.query.web === "1" ? webURL.toString() : mobileRedirect);
 
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
       userId,
       userSecret,
       immediateRedirect: true,
-      customRedirect: requireEnv("SNAPTRADE_REDIRECT_URI"),
+      customRedirect: requested,
       connectionType: "read",
     });
 
-    const redirectURI = pickRedirectUrl(loginResp?.data);
-    console.log("↪️  login response redirect", { redirectURI });
-    if (!redirectURI) return res.status(502).json({ error: "No redirect URL", raw: loginResp?.data });
+    const data: any = loginResp?.data;
+    const redirectURI =
+      data?.redirectURI || data?.redirectUri ||
+      data?.loginRedirectURI || data?.loginRedirectUri ||
+      (typeof data === "string" ? data : undefined);
 
-    const payload: any = { redirectURI, url: redirectURI, userId };
-    if (process.env.ALLOW_SECRET_IN_RESPONSE === "1") payload.userSecret = userSecret; // dev only
-    res.json(payload);
+    if (!redirectURI) return res.status(502).json({ error: "No redirect URL", raw: data });
+
+    res.redirect(302, redirectURI);
+
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
-});
+}
+
+app.get("/connect", handleConnect);
+app.get("/connect/redirect", handleConnect); // alias for your frontend button
+
 
 /* ----------------------------- linked ---------------------------- */
 
 app.get("/realtime/linked", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
-    const userSecret = String(req.query.userSecret || USER_SECRETS.get(userId) || "");
-    if (!userId || !userSecret) {
-      return res.status(400).json({ linked: false, error: "Missing userId or userSecret" });
-    }
+    const userSecret = String(req.query.userSecret || getSecret(userId) || "");
+    if (!userId || !userSecret) return res.status(400).json({ linked: false, error: "Missing userId or userSecret" });
 
     const snaptrade = mkClient();
     let linked = false;
@@ -350,8 +343,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
-    const fromMap = USER_SECRETS.get(userId) ?? "";
-    const userSecret = (req.query.userSecret ?? fromMap ?? "").toString();
+    const userSecret = (req.query.userSecret ?? getSecret(userId) ?? "").toString();
 
     if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       return res.status(400).json({ error: "Missing userId or userSecret" });
@@ -362,12 +354,7 @@ app.get("/realtime/summary", async (req, res) => {
     const accounts: any[] = accountsResp.data || [];
 
     if (!accounts.length) {
-      return res.json({
-        accounts: [],
-        totals: { equity: 0, cash: 0, buyingPower: 0 },
-        positions: [],
-        syncing: false,
-      });
+      return res.json({ accounts: [], totals: { equity: 0, cash: 0, buyingPower: 0 }, positions: [], syncing: false });
     }
 
     let totalValue = 0, totalCash = 0, totalBP = 0;
@@ -380,36 +367,27 @@ app.get("/realtime/summary", async (req, res) => {
 
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-      // balances (support both shapes)
       const balObj: any = (h.data as any)?.balance || {};
       const balancesArr: any[] = (h.data as any)?.balances || [];
 
       const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
       const acctCash =
         pickNumber(balObj?.cash, balObj?.cash?.amount) ||
-        pickNumber((balancesArr.find((b: any) => b?.cash != null) || {}));
+        pickNumber(balancesArr.find((b: any) => b?.cash != null) || {});
       const acctBP =
         pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) ||
-        pickNumber((balancesArr.find((b: any) => b?.buying_power != null) || {})) ||
+        pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {}) ||
         acctCash;
 
       totalValue += acctTotal;
       totalCash += acctCash;
       totalBP += acctBP;
 
-      // positions: find them anywhere in the payload
       const posArr: any[] = findPositionsArray(h.data);
       for (const p of posArr) {
-        const sym = extractDisplaySymbol(p); // now grabs inner symbol strings
+        const sym = extractDisplaySymbol(p);
         const symbolId =
-          pickStringStrict(
-            p?.symbol_id,
-            p?.security_id,
-            p?.instrument_id,
-            p?.id,
-            p?.symbol?.id,
-            p?.universal_symbol?.id
-          ) || sym;
+          pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
 
         const qty = pickNumber(p?.units, p?.quantity, p?.qty);
         const price = pickNumber(p?.price, p?.price?.value);
@@ -428,7 +406,6 @@ app.get("/realtime/summary", async (req, res) => {
         });
       }
 
-      // optional sync hint
       const ss: any = (h.data as any)?.sync_status || (h.data as any)?.syncStatus;
       const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
       if (initDone === false) syncing = true;
@@ -459,7 +436,7 @@ app.get("/realtime/summary", async (req, res) => {
 app.get("/debug/holdings", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
-    const userSecret = String(req.query.userSecret || USER_SECRETS.get(userId) || "");
+    const userSecret = String(req.query.userSecret || getSecret(userId) || "");
     if (!userId || !userSecret) return res.status(400).json({ error: "Missing userId or userSecret" });
 
     const snaptrade = mkClient();
@@ -471,11 +448,7 @@ app.get("/debug/holdings", async (req, res) => {
       if (!accountId) continue;
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
       const pos = findPositionsArray(h.data);
-      out[accountId] = {
-        keys: Object.keys(h.data || {}),
-        sample: pos.slice(0, 3),
-        raw: h.data,
-      };
+      out[accountId] = { keys: Object.keys(h.data || {}), sample: pos.slice(0, 3), raw: h.data };
     }
     res.json(out);
   } catch (err: any) {
@@ -491,7 +464,6 @@ app.use((_req, res) => res.status(404).type("text/plain").send("Not found"));
 
 app.listen(PORT, HOST, () => {
   console.log(`🚀 API running on http://${HOST}:${PORT}`);
-  // dump routes at boot
   // @ts-ignore
   const stack: any[] = app._router?.stack || [];
   const routes = stack

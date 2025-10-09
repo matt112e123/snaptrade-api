@@ -16,7 +16,7 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "snaptrade-typescript-sdk": "^9.0.126"
+    "snaptrade-typescript-sdk": "^9.0.145"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

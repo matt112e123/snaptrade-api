@@ -273,25 +273,36 @@ async function handleConnect(req: express.Request, res: express.Response) {
     // store secret for the polling endpoints
     putSecret(userId, userSecret);
 
-    const mobileRedirect = requireEnv("SNAPTRADE_REDIRECT_URI"); // apexmarkets://snaptrade-callback
-    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileRedirect; 
+    const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
+    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback
+
+    // Append userId to BOTH
+    const mobileURL = new URL(mobileBase);
+    mobileURL.searchParams.set("userId", userId);
+
     const webURL = new URL(webBase);
     webURL.searchParams.set("userId", userId);
 
+    // only accept valid URLs from query
     const tryUrl = (v: unknown): string | "" => {
       if (typeof v !== "string" || !v.trim()) return "";
       try { return new URL(v).toString(); } catch { return ""; }
     };
     const custom = tryUrl(req.query.customRedirect) || tryUrl(req.query.redirect);
-    const requested = custom || (req.query.web === "1" ? webURL.toString() : mobileRedirect);
+
+    // Decide: web or mobile
+    const requested =
+      custom ||
+      (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
 
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-      userId,
-      userSecret,
-      immediateRedirect: true,
-      customRedirect: requested,
-      connectionType: "read",
-    });
+  userId,
+  userSecret,
+  immediateRedirect: true,
+  customRedirect: requested,
+  connectionType: "trade", // ✅ enable trading access
+});
+
 
     const data: any = loginResp?.data;
     const redirectURI =
@@ -303,25 +314,12 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-    // 🔑 Key part: decide format
-    if (req.query.web === "1") {
-      // Web → send redirect
-      res.redirect(302, redirectURI);
-    } else {
-      // Mobile → return JSON like before
-      res.json({
-        redirectURI,
-        url: redirectURI,
-        userId,
-        userSecret,
-      });
-    }
+    res.redirect(302, redirectURI);
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
 }
-
 
 
 app.get("/connect", handleConnect);
@@ -475,6 +473,93 @@ app.get("/debug/holdings", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
+
+/* ----------------------- Trade: Place Order ----------------------- */
+/**
+ * Sample request payload:
+ * {
+ *   "userId": "abc-123",
+ *   "userSecret": "secret-xyz",
+ *   "accountId": "acc-456",
+ *   "symbol": "AAPL",             // or resolved symbolId
+ *   "action": "Buy",              // or "Sell"
+ *   "orderType": "Limit",         // or "Market"
+ *   "quantity": 1,
+ *   "limitPrice": 180.50          // only for Limit orders
+ * }
+ */
+
+app.post("/trade/placeOrder", async (req, res) => {
+  try {
+    const {
+      userId,
+      userSecret,
+      accountId,
+      symbol,
+      action,
+      orderType,
+      quantity,
+      limitPrice,
+    } = req.body;
+
+    const snaptrade = mkClient();
+
+const order = await (snaptrade.trading as any).placeOrder({
+  userId,
+  userSecret,
+  accountId, // ✅ keep camelCase here for runtime
+  body: {
+    action,
+    order_type: orderType,
+    time_in_force: "Day",
+    units: quantity,
+    symbol,
+    price: limitPrice,
+  },
+});
+
+
+
+
+
+    res.json(order.data);
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+
+
+
+
+
+
+/* ----------------------- Trade: Symbol Lookup ----------------------- */
+app.get("/trade/symbol/:ticker", async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    const snaptrade = mkClient();
+
+    const allSymbols = await snaptrade.referenceData.getSymbols();
+    const matches = (allSymbols.data || []).filter((s: any) =>
+      s.symbol?.toUpperCase().includes(ticker) ||
+      s.description?.toUpperCase().includes(ticker)
+    );
+
+    res.json(matches);
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+
+
+
+
+
+/* ---------------------------- 404 last ---------------------------- */
+app.use((_req, res) => res.status(404).type("text/plain").send("Not found"));
+
 
 /* ---------------------------- 404 last ---------------------------- */
 

@@ -314,11 +314,8 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-if (req.query.json === "1" || process.env.ALLOW_JSON === "1") {
-  res.json({ redirectURI });
-} else {
-  res.redirect(302, redirectURI);
-}
+res.json({ redirectURI });
+
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));

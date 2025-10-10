@@ -314,7 +314,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-res.json({ redirectURI });
+res.json({ url: redirectURI, userId, userSecret });
 
 
   } catch (err: any) {

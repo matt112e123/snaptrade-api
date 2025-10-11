@@ -1,4 +1,3 @@
-
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
@@ -243,8 +242,8 @@ app.get("/debug/register", async (_req, res) => {
 /* ------------------------- SnapTrade connect ---------------------- */
 /**
  * NAVIGATE here from the browser (not fetch/XHR):
- *   /connect?fresh=1&web=1        # web callback
- *   /connect?fresh=1              # mobile deep link callback
+ * /connect?fresh=1&web=1        # web callback
+ * /connect?fresh=1              # mobile deep link callback
  * Optional (dev only): ?json=1 when ALLOW_JSON=1
  */
 async function handleConnect(req: express.Request, res: express.Response) {
@@ -296,12 +295,13 @@ async function handleConnect(req: express.Request, res: express.Response) {
       (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
 
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-  userId,
-  userSecret,
-  immediateRedirect: true,
-  customRedirect: requested,
-  connectionType: "trade", // ✅ enable trading access
-});
+      userId,
+      userSecret,
+      immediateRedirect: true,
+      customRedirect: requested,
+      // ⚡️ THIS IS THE CRITICAL CHANGE: "trade" for trading, "read" for read-only
+      connectionType: "trade", 
+    });
 
 
     const data: any = loginResp?.data;
@@ -314,8 +314,8 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-res.json({ url: redirectURI, userId, userSecret });
-
+    // ⚡️ THIS IS THE FIX: Redirect the browser instead of returning JSON
+    res.redirect(302, redirectURI);
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));
@@ -475,21 +475,20 @@ app.get("/debug/holdings", async (req, res) => {
   }
 });
 
-/* ----------------------- Trade: Place Order ----------------------- */
+/* ----------------------- Trade: Place Order (New) ----------------------- */
 /**
  * Sample request payload:
  * {
- *   "userId": "abc-123",
- *   "userSecret": "secret-xyz",
- *   "accountId": "acc-456",
- *   "symbol": "AAPL",             // or resolved symbolId
- *   "action": "Buy",              // or "Sell"
- *   "orderType": "Limit",         // or "Market"
- *   "quantity": 1,
- *   "limitPrice": 180.50          // only for Limit orders
+ * "userId": "abc-123",
+ * "userSecret": "secret-xyz",
+ * "accountId": "acc-456",
+ * "symbol": "AAPL",             // or resolved symbolId
+ * "action": "Buy",              // or "Sell"
+ * "orderType": "Limit",         // or "Market"
+ * "quantity": 1,
+ * "limitPrice": 180.50          // only for Limit orders
  * }
  */
-
 app.post("/trade/placeOrder", async (req, res) => {
   try {
     const {
@@ -505,23 +504,19 @@ app.post("/trade/placeOrder", async (req, res) => {
 
     const snaptrade = mkClient();
 
-const order = await (snaptrade.trading as any).placeOrder({
-  userId,
-  userSecret,
-  accountId, // ✅ keep camelCase here for runtime
-  body: {
-    action,
-    order_type: orderType,
-    time_in_force: "Day",
-    units: quantity,
-    symbol,
-    price: limitPrice,
-  },
-});
-
-
-
-
+    const order = await (snaptrade.trading as any).placeOrder({
+      userId,
+      userSecret,
+      accountId, // ✅ keep camelCase here for runtime
+      body: {
+        action,
+        order_type: orderType,
+        time_in_force: "Day",
+        units: quantity,
+        symbol,
+        price: limitPrice,
+      },
+    });
 
     res.json(order.data);
   } catch (err: any) {
@@ -530,12 +525,7 @@ const order = await (snaptrade.trading as any).placeOrder({
 });
 
 
-
-
-
-
-
-/* ----------------------- Trade: Symbol Lookup ----------------------- */
+/* ----------------------- Trade: Symbol Lookup (New) ----------------------- */
 app.get("/trade/symbol/:ticker", async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   try {
@@ -552,11 +542,6 @@ app.get("/trade/symbol/:ticker", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
-
-
-
-
-
 
 
 /* ---------------------------- 404 last ---------------------------- */

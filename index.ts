@@ -300,7 +300,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
       immediateRedirect: true,
       customRedirect: requested,
       // ⚡️ THIS IS THE CRITICAL CHANGE: "trade" for trading, "read" for read-only
-      connectionType: "trade", 
+      connectionType: "trade-if-available",
     });
 
 

@@ -314,8 +314,12 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-    // ⚡️ THIS IS THE FIX: Redirect the browser instead of returning JSON
-    res.redirect(302, redirectURI);
+    // 🚀 FIX: Return the URL and credentials as a JSON object
+    return res.status(200).json({
+      url: redirectURI,
+      userId: userId,
+      userSecret: userSecret,
+    });
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));

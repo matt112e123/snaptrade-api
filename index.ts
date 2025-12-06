@@ -56,18 +56,20 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
 const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
     const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
-    totalValue += acctTotal;
-    totalCash += acctCash;
-    totalBP += acctBP;
+    totalValue += acctTotal ?? 0;
+    totalCash += acctCash ?? 0;
+    totalBP += acctBP ?? 0;
+
 
     const posArr: any[] = findPositionsArray(h.data);
     for (const p of posArr) {
       const sym = extractDisplaySymbol(p);
       const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
-      const qty = pickNumber(p?.units, p?.quantity, p?.qty);
-      const price = pickNumber(p?.price, p?.price?.value);
-      const mv = pickNumber(p?.market_value, p?.marketValue);
-      const value = mv || qty * (price || 0);
+      const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
+const price = pickNumber(p?.price, p?.price?.value) ?? 0;
+const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+const value = mv || qty * price;
+
 
       outPositions.push({
         symbol: sym,
@@ -145,20 +147,31 @@ function errPayload(err: any) {
   return { status, headers, data, message };
 }
 
-function pickNumber(...candidates: any[]): number {
+function pickNumber(...candidates: any[]): number | null {
   for (const v of candidates) {
+    if (v == null) continue;
     if (typeof v === "number" && Number.isFinite(v)) return v;
-    if (typeof v === "string" && v.trim() && !Number.isNaN(Number(v))) return Number(v);
-    if (v && typeof v === "object") {
-      for (const k of ["amount","value","price","market_value","marketValue","cash","buying_power","buyingPower","total"]) {
-        const n = (v as any)[k];
-        if (typeof n === "number" && Number.isFinite(n)) return n;
-        if (typeof n === "string" && n.trim() && !Number.isNaN(Number(n))) return Number(n);
+    if (typeof v === "string") {
+      const n = Number(v);
+      if (!Number.isNaN(n)) return n;
+    }
+    if (typeof v === "object") {
+      for (const key of ["amount","value","price","market_value","marketValue","cash","buying_power","buyingPower","total"]) {
+        const nested = v[key];
+        if (nested != null) {
+          if (typeof nested === "number" && Number.isFinite(nested)) return nested;
+          if (typeof nested === "string" && nested.trim() && !Number.isNaN(Number(nested))) return Number(nested);
+          if (typeof nested === "object") {
+            const n2 = pickNumber(nested);
+            if (n2 !== undefined && n2 !== null) return n2;
+          }
+        }
       }
     }
   }
-  return 0;
+  return null;
 }
+
 
 function pickStringStrict(...candidates: any[]): string {
   for (const v of candidates) if (typeof v === "string" && v.trim()) return v.trim();
@@ -509,9 +522,10 @@ app.get("/realtime/summary", async (req, res) => {
         pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {}) ||
         acctCash;
 
-      totalValue += acctTotal;
-      totalCash += acctCash;
-      totalBP += acctBP;
+      totalValue += acctTotal ?? 0;
+      totalCash += acctCash ?? 0;
+      totalBP += acctBP ?? 0;
+
 
       const posArr: any[] = findPositionsArray(h.data);
       for (const p of posArr) {
@@ -519,10 +533,11 @@ app.get("/realtime/summary", async (req, res) => {
         const symbolId =
           pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
 
-        const qty = pickNumber(p?.units, p?.quantity, p?.qty);
-        const price = pickNumber(p?.price, p?.price?.value);
-        const mv = pickNumber(p?.market_value, p?.marketValue);
-        const value = mv || qty * (price || 0);
+        const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
+        const price = pickNumber(p?.price, p?.price?.value) ?? 0;
+        const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+        const value = mv ?? qty * price;
+
 
         outPositions.push({
           symbol: sym,
@@ -696,19 +711,21 @@ for (const acct of accounts) {
   const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
   const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
-  totalValue += acctTotal;
-  totalCash += acctCash;
-  totalBP += acctBP;
+  totalValue += acctTotal ?? 0;
+  totalCash += acctCash ?? 0;
+  totalBP += acctBP ?? 0;
+
 
   // 4️⃣ Extract positions
   const posArr: any[] = findPositionsArray(h.data);
   for (const p of posArr) {
     const sym = extractDisplaySymbol(p);
     const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
-    const qty = pickNumber(p?.units, p?.quantity, p?.qty);
-    const price = pickNumber(p?.price, p?.price?.value);
-    const mv = pickNumber(p?.market_value, p?.marketValue);
-    const value = mv || qty * (price || 0);
+    const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
+const price = pickNumber(p?.price, p?.price?.value) ?? 0;
+const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+const value = mv || qty * price;
+
 
     outPositions.push({
       symbol: sym,

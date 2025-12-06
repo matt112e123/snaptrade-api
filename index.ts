@@ -4,6 +4,33 @@ import { Snaptrade } from "snaptrade-typescript-sdk";
 import os from "os";
 import cors from "cors";
 
+import pkg from "pg";
+const { Pool } = pkg;
+
+// 1️⃣ Database connection (top of file)
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL, // Render Postgres URL
+  ssl: { rejectUnauthorized: false }
+});
+
+// 2️⃣ Save function (right after pool)
+async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
+  try {
+    const query = `
+      INSERT INTO snaptrade_users (user_id, user_secret, data)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id)
+      DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
+    `;
+    await pool.query(query, [userId, userSecret, data]);
+    console.log(`Saved user ${userId} to DB`);
+  } catch (err) {
+    console.error("❌ Failed to save user to DB:", err);
+  }
+}
+
+
+
 /* ------------------------ config / helpers ------------------------ */
 
 const PORT = Number(process.env.PORT || 4000);
@@ -271,6 +298,9 @@ async function handleConnect(req: express.Request, res: express.Response) {
 
     // store secret for the polling endpoints
     putSecret(userId, userSecret);
+    // save the user to Postgres
+   await saveSnaptradeUser(userId, userSecret);
+
 
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
     const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback
@@ -543,6 +573,22 @@ app.get("/trade/symbol/:ticker", async (req, res) => {
   }
 });
 
+/* ---------------------- Save Snaptrade User ---------------------- */
+app.post("/snaptrade/saveUser", async (req, res) => {
+  try {
+    const { userId, userSecret, data } = req.body;
+
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: "Missing userId or userSecret" });
+    }
+
+    await saveSnaptradeUser(userId, userSecret, data || {});
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error("❌ Failed to save user via endpoint:", err);
+    res.status(500).json({ error: "Failed to save user" });
+  }
+});
 
 /* ---------------------------- 404 last ---------------------------- */
 

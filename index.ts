@@ -576,15 +576,27 @@ app.get("/trade/symbol/:ticker", async (req, res) => {
 /* ---------------------- Save Snaptrade User ---------------------- */
 app.post("/snaptrade/saveUser", async (req, res) => {
   try {
-    const { userId, userSecret, data } = req.body;
+    const { userId, userSecret } = req.body;
 
     if (!userId || !userSecret) {
       return res.status(400).json({ error: "Missing userId or userSecret" });
     }
 
-    await saveSnaptradeUser(userId, userSecret, data || {});
-    res.json({ success: true });
-  } catch (err: any) {
+    // Fetch the real brokerage summary
+    const summaryResp = await fetch(
+      `${process.env.API_BASE_URL}/realtime/summary?userId=${userId}&userSecret=${userSecret}`
+    );
+    const summary = await summaryResp.json();
+
+    // Save everything into Postgres
+    await saveSnaptradeUser(
+      userId,
+      userSecret,
+      summary   // THIS is the full accounts/totals/positions JSON
+    );
+
+    res.json({ success: true, saved: summary });
+  } catch (err) {
     console.error("❌ Failed to save user via endpoint:", err);
     res.status(500).json({ error: "Failed to save user" });
   }

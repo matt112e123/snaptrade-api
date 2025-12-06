@@ -16,6 +16,7 @@ const pool = new Pool({
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
+    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
     const query = `
       INSERT INTO snaptrade_users (user_id, user_secret, data)
       VALUES ($1, $2, $3)
@@ -28,6 +29,7 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
     console.error("❌ Failed to save user to DB:", err);
   }
 }
+
 
 
 
@@ -298,6 +300,9 @@ async function handleConnect(req: express.Request, res: express.Response) {
 
     // store secret for the polling endpoints
     putSecret(userId, userSecret);
+
+    
+    
     // save the user to Postgres
    await saveSnaptradeUser(userId, userSecret);
 

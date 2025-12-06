@@ -582,22 +582,82 @@ app.post("/snaptrade/saveUser", async (req, res) => {
       return res.status(400).json({ error: "Missing userId or userSecret" });
     }
 
-    // Fetch the real brokerage summary
-    const summaryResp = await fetch(
-      `${process.env.API_BASE_URL}/realtime/summary?userId=${userId}&userSecret=${userSecret}`
-    );
-    const summary = await summaryResp.json();
+    // 1️⃣ Create SnapTrade client
+    const snaptrade = mkClient();
 
-    // Save everything into Postgres
-    await saveSnaptradeUser(
-      userId,
-      userSecret,
-      summary   // THIS is the full accounts/totals/positions JSON
-    );
+    // 2️⃣ Get accounts
+    const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+    const accounts: any[] = accountsResp.data || [];
+
+    let totalValue = 0, totalCash = 0, totalBP = 0;
+    const outPositions: any[] = [];
+    let syncing = false;
+
+    for (const acct of accounts) {
+      const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
+      if (!accountId) continue;
+
+      const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+
+      const balObj: any = h.data?.balance || {};
+      const balancesArr: any[] = h.data?.balances || [];
+
+      const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
+      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+      const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
+
+      totalValue += acctTotal;
+      totalCash += acctCash;
+      totalBP += acctBP;
+
+      const posArr: any[] = findPositionsArray(h.data);
+      for (const p of posArr) {
+        const sym = extractDisplaySymbol(p);
+        const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
+        const qty = pickNumber(p?.units, p?.quantity, p?.qty);
+        const price = pickNumber(p?.price, p?.price?.value);
+        const mv = pickNumber(p?.market_value, p?.marketValue);
+        const value = mv || qty * (price || 0);
+
+        outPositions.push({
+          symbol: sym,
+          symbolId,
+          needsMapping: UUID_RE.test(sym),
+          name: extractDisplayName(p),
+          quantity: qty,
+          price,
+          value,
+          isCrypto: isCryptoPosition(p),
+        });
+      }
+
+      const ss: any = h.data?.sync_status || h.data?.syncStatus;
+      const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
+      if (initDone === false) syncing = true;
+    }
+
+    const summary = {
+      accounts: accounts.map((a: any, i: number) => ({
+        id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+        name: a.name || a.accountName || "Account",
+        currency: a.currency || "USD",
+        type: a.type || a.accountType || "BROKERAGE",
+      })),
+      totals: {
+        equity: Math.max(0, totalValue - totalCash),
+        cash: totalCash,
+        buyingPower: totalBP,
+      },
+      positions: outPositions,
+      syncing,
+    };
+
+    // 3️⃣ Save to DB
+    await saveSnaptradeUser(userId, userSecret, summary);
 
     res.json({ success: true, saved: summary });
   } catch (err) {
-    console.error("❌ Failed to save user via endpoint:", err);
+    console.error("❌ Failed to save user:", err);
     res.status(500).json({ error: "Failed to save user" });
   }
 });

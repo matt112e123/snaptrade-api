@@ -16,37 +16,21 @@ const pool = new Pool({
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
-    // Normalize: if data is a string try parse, otherwise keep object
-    let parsed = data;
-    if (typeof data === "string") {
-      try { parsed = JSON.parse(data); } catch { parsed = data; }
-    }
-
-    // Log what we're about to save in a compact, informative way
-    console.log("Saving user:", userId, "dataKeys:", Object.keys(parsed || {}), "isEmpty:", !parsed || Object.keys(parsed).length === 0);
-
-    // Guard: do not save empty object
-    if (!parsed || (typeof parsed === "object" && Object.keys(parsed).length === 0)) {
-      console.warn(`Skipping DB save for ${userId} — empty summary`);
-      return;
-    }
-
+    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
     const query = `
-      INSERT INTO snaptrade_users (user_id, user_secret, data)
-      VALUES ($1, $2, $3::jsonb)
-      ON CONFLICT (user_id)
-      DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, -- keep created_at untouched
-                    updated_at = CURRENT_TIMESTAMP
-    `;
-    // pass JS object directly; pg will serialize it for jsonb
-    await pool.query(query, [userId, userSecret, parsed]);
+  INSERT INTO snaptrade_users (user_id, user_secret, data)
+  VALUES ($1, $2, $3)
+  ON CONFLICT (user_id)
+  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
+`;
+// Explicitly stringify the object for safety
+await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
 
     console.log(`Saved user ${userId} to DB`);
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
   }
 }
-
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
@@ -408,6 +392,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
     
     
     // save the user to Postgres
+  await fetchAndSaveUserSummary(userId, userSecret);
 
 
 
@@ -570,21 +555,6 @@ app.get("/realtime/summary", async (req, res) => {
       const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
       if (initDone === false) syncing = true;
     }
-
-    // Save to DB only if positions or accounts exist
-if ((accounts.length > 0 || outPositions.length > 0)) {
-  saveSnaptradeUser(userId, userSecret, {
-    accounts,
-    totals: {
-      equity: Math.max(0, totalValue - totalCash),
-      cash: totalCash,
-      buyingPower: totalBP,
-    },
-    positions: outPositions,
-    syncing,
-  });
-}
-
 
     res.json({
       accounts: accounts.map((a: any, i: number) => ({

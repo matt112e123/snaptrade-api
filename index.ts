@@ -597,6 +597,8 @@ app.post("/snaptrade/saveUser", async (req, res) => {
     console.log("Fetching accounts for", { userId, userSecret });
 
    // 1️⃣ Fetch accounts
+
+   console.log("Fetching accounts for", { userId, userSecret });
 const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
 
     console.log("Accounts response:", JSON.stringify(accountsResp.data, null, 2));

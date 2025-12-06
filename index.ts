@@ -16,17 +16,16 @@ const pool = new Pool({
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
-    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2));
+    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
     const query = `
-      INSERT INTO snaptrade_users (user_id, user_secret, data, created_at, updated_at)
-      VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (user_id)
-      DO UPDATE SET
-        user_secret = EXCLUDED.user_secret,
-        data = EXCLUDED.data,
-        updated_at = CURRENT_TIMESTAMP
-    `;
-    await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
+  INSERT INTO snaptrade_users (user_id, user_secret, data)
+  VALUES ($1, $2, $3)
+  ON CONFLICT (user_id)
+  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
+`;
+// Explicitly stringify the object for safety
+await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
+
     console.log(`Saved user ${userId} to DB`);
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
@@ -36,9 +35,10 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
   const snaptrade = mkClient();
+
+  // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
   const accounts: any[] = accountsResp.data || [];
-  if (!accounts.length) return null;
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
   const outPositions: any[] = [];
@@ -48,29 +48,28 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
     if (!accountId) continue;
 
-    const hData = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-    if (!hData?.data) { syncing = true; continue; }
-
-    const balObj: any = hData.data?.balance || {};
-    const balancesArr: any[] = hData.data?.balances || [];
-
+    const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+    const balObj: any = h.data?.balance || {};
+    const balancesArr: any[] = h.data?.balances || [];
 
     const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-    const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
     const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
     totalValue += acctTotal ?? 0;
     totalCash += acctCash ?? 0;
     totalBP += acctBP ?? 0;
 
-    const posArr: any[] = findPositionsArray(hData);
+
+    const posArr: any[] = findPositionsArray(h.data);
     for (const p of posArr) {
       const sym = extractDisplaySymbol(p);
       const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
       const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
-      const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-      const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-      const value = mv || qty * price;
+const price = pickNumber(p?.price, p?.price?.value) ?? 0;
+const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+const value = mv || qty * price;
+
 
       outPositions.push({
         symbol: sym,
@@ -83,6 +82,10 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
         isCrypto: isCryptoPosition(p),
       });
     }
+
+    const ss: any = h.data?.sync_status || h.data?.syncStatus;
+    const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
+    if (initDone === false) syncing = true;
   }
 
   const summary = {
@@ -104,8 +107,6 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
   await saveSnaptradeUser(userId, userSecret, summary);
   return summary;
 }
-
-
 
 
 

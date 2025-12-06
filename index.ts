@@ -16,16 +16,17 @@ const pool = new Pool({
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
-    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
+    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2));
     const query = `
-  INSERT INTO snaptrade_users (user_id, user_secret, data)
-  VALUES ($1, $2, $3)
-  ON CONFLICT (user_id)
-  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
-`;
-// Explicitly stringify the object for safety
-await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
-
+      INSERT INTO snaptrade_users (user_id, user_secret, data, created_at, updated_at)
+      VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        user_secret = EXCLUDED.user_secret,
+        data = EXCLUDED.data,
+        updated_at = CURRENT_TIMESTAMP
+    `;
+    await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
     console.log(`Saved user ${userId} to DB`);
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);

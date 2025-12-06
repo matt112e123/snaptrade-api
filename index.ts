@@ -23,7 +23,6 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
   ON CONFLICT (user_id)
   DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
 `;
-
 // Explicitly stringify the object for safety
 await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
 
@@ -33,6 +32,79 @@ await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
   }
 }
 
+// 3️⃣ Fetch & save summary helper
+async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
+  const snaptrade = mkClient();
+
+  // Fetch accounts
+  const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+  const accounts: any[] = accountsResp.data || [];
+
+  let totalValue = 0, totalCash = 0, totalBP = 0;
+  const outPositions: any[] = [];
+  let syncing = false;
+
+  for (const acct of accounts) {
+    const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
+    if (!accountId) continue;
+
+    const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+    const balObj: any = h.data?.balance || {};
+    const balancesArr: any[] = h.data?.balances || [];
+
+    const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
+const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+    const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
+
+    totalValue += acctTotal;
+    totalCash += acctCash;
+    totalBP += acctBP;
+
+    const posArr: any[] = findPositionsArray(h.data);
+    for (const p of posArr) {
+      const sym = extractDisplaySymbol(p);
+      const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
+      const qty = pickNumber(p?.units, p?.quantity, p?.qty);
+      const price = pickNumber(p?.price, p?.price?.value);
+      const mv = pickNumber(p?.market_value, p?.marketValue);
+      const value = mv || qty * (price || 0);
+
+      outPositions.push({
+        symbol: sym,
+        symbolId,
+        needsMapping: UUID_RE.test(sym),
+        name: extractDisplayName(p),
+        quantity: qty,
+        price,
+        value,
+        isCrypto: isCryptoPosition(p),
+      });
+    }
+
+    const ss: any = h.data?.sync_status || h.data?.syncStatus;
+    const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
+    if (initDone === false) syncing = true;
+  }
+
+  const summary = {
+    accounts: accounts.map((a: any, i: number) => ({
+      id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+      name: a.name || a.accountName || "Account",
+      currency: a.currency || "USD",
+      type: a.type || a.accountType || "BROKERAGE",
+    })),
+    totals: {
+      equity: Math.max(0, totalValue - totalCash),
+      cash: totalCash,
+      buyingPower: totalBP,
+    },
+    positions: outPositions,
+    syncing,
+  };
+
+  await saveSnaptradeUser(userId, userSecret, summary);
+  return summary;
+}
 
 
 
@@ -307,7 +379,8 @@ async function handleConnect(req: express.Request, res: express.Response) {
     
     
     // save the user to Postgres
-   await saveSnaptradeUser(userId, userSecret);
+  await fetchAndSaveUserSummary(userId, userSecret);
+
 
 
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback

@@ -593,8 +593,14 @@ app.post("/snaptrade/saveUser", async (req, res) => {
     // 1️⃣ Create SnapTrade client
     const snaptrade = mkClient();
 
+      // 🔹 ADD LOGS HERE 🔹
+    console.log("Fetching accounts for", { userId, userSecret });
+
    // 1️⃣ Fetch accounts
 const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+
+    console.log("Accounts response:", JSON.stringify(accountsResp.data, null, 2));
+
 const accounts: any[] = accountsResp.data || [];
 
 let totalValue = 0, totalCash = 0, totalBP = 0;

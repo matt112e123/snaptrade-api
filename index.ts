@@ -34,6 +34,8 @@ await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
+    console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
+
   const snaptrade = mkClient();
 
   // Fetch accounts
@@ -399,7 +401,24 @@ async function handleConnect(req: express.Request, res: express.Response) {
     }
 
     // store secret for the polling endpoints
-    putSecret(userId, userSecret);
+// store secret for the polling endpoints
+putSecret(userId, userSecret);
+
+// 🔄 FULL SYNC LOOP — wait until holdings finished syncing
+let summary;
+console.log(`⏳ Initial sync starting for ${userId}`);
+
+do {
+  summary = await fetchAndSaveUserSummary(userId, userSecret);
+
+  console.log(`🔄 Sync status for ${userId}:`, summary.syncing);
+
+  if (summary.syncing) {
+    await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds
+  }
+} while (summary.syncing);
+
+console.log(`✅ User ${userId} fully synced and saved to DB.`);
 
     
     

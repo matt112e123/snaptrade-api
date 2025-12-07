@@ -831,22 +831,22 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
     }
 
     // Try fetchAndSave but increase tries + log responses
-    let summary;
+   let summary;
 let tries = 0;
+
 do {
   summary = await fetchAndSaveUserSummary(userId, userSecret);
-  if (summary.accounts.length > 0) break;  // <--- check this!
+  if (summary.accounts.length > 0) break;   // only break when accounts exist
   await new Promise(r => setTimeout(r, 2000));
   tries++;
-} while (tries < 20);
+} while (tries < 10);
 
+if (summary.accounts.length > 0) {
+  await saveSnaptradeUser(userId, userSecret, summary);
+} else {
+  console.warn(`⚠️ User ${userId} still has no accounts after ${tries} tries`);
+}
 
-    if (summary && summary.accounts && summary.accounts.length) {
-      await saveSnaptradeUser(userId, userSecret, summary);
-      console.log(`✅ Webhook processed: saved summary for ${userId}`);
-    } else {
-      console.warn(`⚠️ Webhook processed but accounts empty for ${userId} after ${tries} tries`);
-    }
 
   } catch (err) {
     console.error("❌ Webhook processing error:", err);

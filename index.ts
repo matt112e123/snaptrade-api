@@ -423,6 +423,7 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
     
     
     // save the user to Postgres
+  await fetchAndSaveUserSummary(userId, userSecret);
 
 
 

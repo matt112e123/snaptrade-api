@@ -9,10 +9,21 @@ import path from "path";
 import pkg from "pg";
 const { Pool } = pkg;
 
-// Directory for local backups
-const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
-if (!fs.existsSync(LOCAL_SAVE_DIR)) fs.mkdirSync(LOCAL_SAVE_DIR, { recursive: true });
+// Use your project folder explicitly
+const LOCAL_SAVE_DIR = path.resolve(__dirname, "../snaptrade_local"); 
+// If this file is in src/ or dist/, "../" will put it at the project root
+
+if (!fs.existsSync(LOCAL_SAVE_DIR)) {
+  fs.mkdirSync(LOCAL_SAVE_DIR, { recursive: true });
+}
 console.log("Local save dir:", LOCAL_SAVE_DIR);
+
+// ✅ Test writing to local folder
+(async () => {
+  const testFile = path.join(LOCAL_SAVE_DIR, "test.json");
+  fs.writeFileSync(testFile, JSON.stringify({ ok: true }, null, 2), "utf-8");
+  console.log("✅ Test file written at:", testFile);
+})();
 
 async function saveLocally(userId: string, summary: any, userSecret?: string) {
   try {

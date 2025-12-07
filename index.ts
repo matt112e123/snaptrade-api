@@ -414,12 +414,10 @@ await saveSnaptradeUser(userId, userSecret, {}); // Save to DBconst summary = aw
 
 // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
 const summary = await fetchAndSaveUserSummary(userId, userSecret);
-
 if (summary.accounts.length > 0) {
   await saveSnaptradeUser(userId, userSecret, summary);
-  console.log(`✅ User ${userId} fully synced and saved to DB.`);
 } else {
-  console.log(`⚠️ No accounts to save for user ${userId}`);
+  console.log(`⚠️ User ${userId} has no accounts yet. Waiting for sync.`);
 }
 
 

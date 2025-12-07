@@ -34,16 +34,26 @@ await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
-    console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
+  console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
 
   const snaptrade = mkClient();
 
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-  console.log("❗ SnapTrade accounts response:", JSON.stringify(accountsResp.data, null, 2));
-
   const accounts: any[] = accountsResp.data || [];
+  console.log("❗ SnapTrade accounts response:", JSON.stringify(accounts, null, 2));
 
+  if (!accounts.length) {
+    console.log(`⚠️ No accounts returned for ${userId}, skipping save.`);
+    return {
+      accounts: [],
+      totals: { equity: 0, cash: 0, buyingPower: 0 },
+      positions: [],
+      syncing: false
+    };
+  }
+
+  // If we got accounts, fetch holdings
   let totalValue = 0, totalCash = 0, totalBP = 0;
   const outPositions: any[] = [];
   let syncing = false;
@@ -53,29 +63,29 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-      console.log(`❗ Holdings for account ${accountId}:`, JSON.stringify(h.data, null, 2));
 
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 
     const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
-    const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
+    const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) ||
+                     pickNumber(balancesArr.find(b => b?.cash != null) || {});
+    const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) ||
+                   pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) ||
+                   acctCash;
 
     totalValue += acctTotal ?? 0;
     totalCash += acctCash ?? 0;
     totalBP += acctBP ?? 0;
-
 
     const posArr: any[] = findPositionsArray(h.data);
     for (const p of posArr) {
       const sym = extractDisplaySymbol(p);
       const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
       const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
-const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-const value = mv || qty * price;
-
+      const price = pickNumber(p?.price, p?.price?.value) ?? 0;
+      const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+      const value = mv || qty * price;
 
       outPositions.push({
         symbol: sym,
@@ -110,9 +120,14 @@ const value = mv || qty * price;
     syncing,
   };
 
-  await saveSnaptradeUser(userId, userSecret, summary);
+  // ✅ Only save if we actually have accounts
+  if (accounts.length > 0) {
+    await saveSnaptradeUser(userId, userSecret, summary);
+  }
+
   return summary;
 }
+
 
 async function fetchUserSecretFromDB(userId: string): Promise<string> {
   try {

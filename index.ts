@@ -73,8 +73,9 @@ const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(b
       const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
       const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
 const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-const value = mv || qty * price;
+const mv = pickNumber(p?.market_value, p?.marketValue);
+const value = mv !== null && mv !== undefined ? mv : (qty * price);
+
 
 
       outPositions.push({
@@ -570,8 +571,9 @@ app.get("/realtime/summary", async (req, res) => {
 
         const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
         const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-        const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-        const value = mv ?? qty * price;
+        const mv = pickNumber(p?.market_value, p?.marketValue);
+const value = mv !== null && mv !== undefined ? mv : (qty * price);
+
 
 
         outPositions.push({
@@ -758,8 +760,8 @@ for (const acct of accounts) {
     const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
     const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
 const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-const value = mv || qty * price;
+const mv = pickNumber(p?.market_value, p?.marketValue);
+const value = mv !== null && mv !== undefined ? mv : (qty * price);
 
 
     outPositions.push({

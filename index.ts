@@ -784,6 +784,14 @@ await saveSnaptradeUser(userId, userSecret, summary);
   }
 });
 
+
+/* ---------------- Debug logging for SnapTrade webhook ---------------- */
+app.use("/webhook/snaptrade", (req, res, next) => {
+  console.log("📦 Incoming webhook headers:", req.headers);
+  console.log("📦 Incoming webhook body:", req.body);
+  next();
+});
+
 app.post("/webhook/snaptrade", async (req, res) => {
   try {
     const event = req.body;

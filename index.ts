@@ -48,10 +48,6 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
   const outPositions: any[] = [];
   let syncing = false;
 
-  if (accounts.length === 0) {
-    syncing = true;
-  }
-
   for (const acct of accounts) {
     const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
     if (!accountId) continue;
@@ -432,6 +428,8 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
     
     
     // save the user to Postgres
+  await fetchAndSaveUserSummary(userId, userSecret);
+
 
 
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback

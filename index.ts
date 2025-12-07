@@ -792,33 +792,25 @@ app.use("/webhook/snaptrade", (req, res, next) => {
   next();
 });
 
-app.post("/webhook/snaptrade", async (req, res) => {
+app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
   try {
     const event = req.body;
+
+    console.log("📦 Incoming webhook:", event);
+
+    // Respond immediately to SnapTrade to avoid retries
+    res.status(200).send("ok");
+
+    // Optional: handle real events with userId/userSecret asynchronously
     const userId = event.userId;
-
-    if (!userId) {
-      console.warn("Webhook missing userId:", event);
-      // Respond 200 anyway to avoid Snaptrade retries
-      return res.status(200).send("ok");
-    }
-
-    res.status(200).send("ok"); // Always respond immediately
-
-    // Async processing
-    const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
-    if (!userSecret) {
-      console.log(`UserSecret for ${userId} not yet available. Will try later.`);
-      return;
-    }
-
-    if (event.type === "user.synced") {
-      console.log(`User ${userId} synced. Fetching full summary...`);
-      fetchAndSaveUserSummary(userId, userSecret).catch(err =>
-        console.error("Webhook async processing error:", err)
-      );
-    } else {
-      console.log(`Unhandled webhook type: ${event.type}`);
+    if (userId) {
+      const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
+      if (userSecret && event.type === "user.synced") {
+        console.log(`User ${userId} synced. Fetching full summary...`);
+        fetchAndSaveUserSummary(userId, userSecret).catch(err =>
+          console.error("Webhook async processing error:", err)
+        );
+      }
     }
 
   } catch (err) {
@@ -826,8 +818,6 @@ app.post("/webhook/snaptrade", async (req, res) => {
     res.status(500).send("error");
   }
 });
-
-
 
 /* ---------------------------- 404 last ---------------------------- */
 

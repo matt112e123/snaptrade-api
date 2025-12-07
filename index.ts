@@ -3,20 +3,9 @@ import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
 import os from "os";
 import cors from "cors";
-import fs from "fs";
-import path from "path";
 
 import pkg from "pg";
 const { Pool } = pkg;
-
-/* -------------------- local backup helper -------------------- */
-async function saveLocalBackup(userId: string, data: any) {
-  const dir = path.resolve(process.cwd(), "snaptrade_backups");
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir);
-  const file = path.join(dir, `${userId}.json`);
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
-  console.log(`💾 Saved local backup: ${file}`);
-}
 
 // 1️⃣ Database connection (top of file)
 const pool = new Pool({
@@ -24,30 +13,24 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
-    console.log("Saving user:", userId, "userSecret present:", Boolean(userSecret));
-    // Sanitize data: ensure an object
-    const payload = (typeof data === "string") ? JSON.parse(data) : data || {};
-    console.log("Saving data keys:", Object.keys(payload));
+    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
     const query = `
-      INSERT INTO snaptrade_users (user_id, user_secret, data, created_at, updated_at)
-      VALUES ($1, $2, $3::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT (user_id)
-      DO UPDATE SET user_secret = EXCLUDED.user_secret,
-                    data = EXCLUDED.data,
-                    updated_at = CURRENT_TIMESTAMP
-      RETURNING user_id;
-    `;
-    const r = await pool.query(query, [userId, userSecret, JSON.stringify(payload)]);
-    console.log(`Saved user ${userId} to DB (rows: ${r.rowCount})`);
-    return r.rows[0];
+  INSERT INTO snaptrade_users (user_id, user_secret, data)
+  VALUES ($1, $2, $3)
+  ON CONFLICT (user_id)
+  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
+`;
+// Explicitly stringify the object for safety
+await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
+
+    console.log(`Saved user ${userId} to DB`);
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
-    throw err;
   }
 }
-
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
@@ -387,32 +370,6 @@ app.get("/debug/register", async (_req, res) => {
   }
 });
 
-/* --------------------- wait for accounts to sync -------------------- */
-async function waitForAccountsToSync(
-  userId: string,
-  userSecret: string,
-  maxRetries = 20,
-  delayMs = 3000
-) {
-  let summary;
-  let tries = 0;
-  do {
-    summary = await fetchAndSaveUserSummary(userId, userSecret);
-    if (summary.accounts.length > 0) break;
-    console.log(`⚠️ Waiting for accounts to sync... attempt ${tries + 1}`);
-    await new Promise(r => setTimeout(r, delayMs));
-    tries++;
-  } while (tries < maxRetries);
-
-  if (summary.accounts.length === 0) {
-    console.warn(`User ${userId} still has no accounts after ${tries} tries`);
-  } else {
-    // save to DB once fully synced
-    await saveSnaptradeUser(userId, userSecret, summary);
-  }
-
-  return summary;
-}
 /* ------------------------- SnapTrade connect ---------------------- */
 /**
  * NAVIGATE here from the browser (not fetch/XHR):
@@ -428,34 +385,45 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
-if (fresh || !userId || !userSecret) {
-  userId = `dev-${Date.now()}`;
-  const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-  userSecret = (reg?.data as any)?.userSecret;
-  if (!userSecret) {
-    return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-  }
-} else {
-  try {
-    await snaptrade.authentication.registerSnapTradeUser({ userId });
-  } catch (e: any) {
-    if (![400, 409].includes(e?.response?.status)) throw e;
-  }
-}
-
+    if (fresh || !userId || !userSecret) {
+      userId = `dev-${Date.now()}`;
+      const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+      userSecret = (reg?.data as any)?.userSecret;
+      if (!userSecret) {
+        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
+      }
+    } else {
+      try {
+        await snaptrade.authentication.registerSnapTradeUser({ userId });
+      } catch (e: any) {
+        if (![400, 409].includes(e?.response?.status)) throw e;
+      }
+    }
 
     // store secret for the polling endpoints
+// store secret for the polling endpoints
 putSecret(userId, userSecret);
 
-
 // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
-const summary = await waitForAccountsToSync(userId, userSecret);
-if (summary.accounts.length > 0) {
-  await saveSnaptradeUser(userId, userSecret, summary);
-} else {
-  console.log(`⚠️ User ${userId} has no accounts yet. Waiting for sync.`);
-}
+let summary;
+console.log(`⏳ Initial sync starting for ${userId}`);
 
+do {
+  summary = await fetchAndSaveUserSummary(userId, userSecret);
+
+  console.log(`🔄 Sync status for ${userId}:`, summary.syncing);
+
+  if (summary.syncing) {
+    await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds
+  }
+} while (summary.syncing);
+
+console.log(`✅ User ${userId} fully synced and saved to DB.`);
+
+    
+    
+    // save the user to Postgres
+  await fetchAndSaveUserSummary(userId, userSecret);
 
 
 
@@ -826,7 +794,6 @@ const summary = {
 
 // 6️⃣ Save the full summary to DB
 await saveSnaptradeUser(userId, userSecret, summary);
-await saveLocalBackup(userId, summary); // optional local storage
 
 
     res.json({ success: true, saved: summary });
@@ -847,30 +814,35 @@ app.use("/webhook/snaptrade", (req, res, next) => {
 app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
   try {
     const event = req.body;
-    console.log("📦 Incoming webhook:", JSON.stringify(event, null, 2));
-    res.status(200).send("ok"); // reply fast
 
-    const userId = event.userId;
-    if (!userId) {
-      console.warn("Webhook missing userId:", JSON.stringify(event));
-      return;
+    console.log("📦 Incoming webhook:", event);
+
+    // Respond immediately to SnapTrade to avoid retries
+    res.status(200).send("ok");
+
+    // Optional: handle real events with userId/userSecret asynchronously
+ const userId = event.userId;
+if (userId) {
+  const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
+  if (userSecret) {
+    // Wait for sync before saving
+    let summary;
+    let tries = 0;
+    do {
+      summary = await fetchAndSaveUserSummary(userId, userSecret);
+      if (!summary.syncing) break;
+      await new Promise(r => setTimeout(r, 2000));
+      tries++;
+    } while (summary.syncing && tries < 10);
+
+    if (summary.accounts.length) {
+      console.log(`✅ Webhook processed: saved summary for ${userId}`);
+    } else {
+      console.log(`⚠️ Webhook processed but accounts empty for ${userId}`);
     }
+  }
+}
 
-    if (event.userSecret) {
-      console.log("Webhook provided userSecret - saving to DB");
-      await saveSnaptradeUser(userId, event.userSecret, { webhookProvided: true });
-      putSecret(userId, event.userSecret); // refresh in-memory cache
-    }
-
-    const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
-    if (!userSecret) {
-      console.warn("Webhook processed but no userSecret available for userId:", userId);
-      return;
-    }
-
-    // Try fetchAndSave but increase tries + log responses
-// 🔄 Wait until accounts are fully synced
-/* --------------------- wait for accounts to sync -------------------- */
 
 
   } catch (err) {
@@ -878,7 +850,6 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
     res.status(500).send("error");
   }
 });
-
 
 /* ---------------------------- 404 last ---------------------------- */
 

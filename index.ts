@@ -40,6 +40,8 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
 
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+  console.log("❗ SnapTrade accounts response:", JSON.stringify(accountsResp.data, null, 2));
+
   const accounts: any[] = accountsResp.data || [];
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
@@ -51,6 +53,8 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+      console.log(`❗ Holdings for account ${accountId}:`, JSON.stringify(h.data, null, 2));
+
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 

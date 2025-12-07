@@ -775,8 +775,6 @@ await saveSnaptradeUser(userId, userSecret, summary);
 app.post("/webhook/snaptrade", async (req, res) => {
   try {
     const event = req.body;
-    console.log("🚀 SnapTrade webhook received:", JSON.stringify(event, null, 2));
-
     const userId = event.userId;
     const userSecret = event.userSecret || getSecret(userId);
 
@@ -785,19 +783,23 @@ app.post("/webhook/snaptrade", async (req, res) => {
       return res.status(400).send("Missing userId or userSecret");
     }
 
+    res.status(200).send("ok"); // ✅ respond immediately
+
+    // async processing
     if (event.type === "user.synced") {
       console.log(`User ${userId} synced. Fetching full summary...`);
-      await fetchAndSaveUserSummary(userId, userSecret);
+      fetchAndSaveUserSummary(userId, userSecret).catch(err =>
+        console.error("Webhook async processing error:", err)
+      );
     } else {
       console.log(`Unhandled webhook type: ${event.type}`);
     }
-
-    res.status(200).send("ok");
   } catch (err) {
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
 });
+
 
 /* ---------------------------- 404 last ---------------------------- */
 

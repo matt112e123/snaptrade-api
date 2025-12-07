@@ -10,25 +10,20 @@ import pkg from "pg";
 const { Pool } = pkg;
 
 // Directory for local backups
-const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
+const LOCAL_SAVE_DIR = path.resolve(__dirname, "snaptrade_local"); // <- use __dirname
 if (!fs.existsSync(LOCAL_SAVE_DIR)) fs.mkdirSync(LOCAL_SAVE_DIR, { recursive: true });
 
 async function saveLocally(userId: string, summary: any, userSecret?: string) {
   try {
+    console.log("Attempting to save locally...", LOCAL_SAVE_DIR);
     const filePath = path.join(LOCAL_SAVE_DIR, `${userId}.json`);
-    const payload = {
-      userId,
-      userSecret: userSecret || "",
-      summary,
-      savedAt: new Date().toISOString(),
-    };
+    const payload = { userId, userSecret: userSecret || "", summary, savedAt: new Date().toISOString() };
     fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
     console.log(`✅ Saved user ${userId} locally at ${filePath}`);
   } catch (err) {
     console.error("❌ Failed to save user locally:", err);
   }
 }
-
 
 // 1️⃣ Database connection (top of file)
 const pool = new Pool({

@@ -40,8 +40,6 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
 
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-  console.log("❗ SnapTrade accounts response:", JSON.stringify(accountsResp.data, null, 2));
-
   const accounts: any[] = accountsResp.data || [];
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
@@ -53,8 +51,6 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-      console.log(`❗ Holdings for account ${accountId}:`, JSON.stringify(h.data, null, 2));
-
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 
@@ -73,9 +69,8 @@ const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(b
       const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
       const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
 const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue);
-const value = mv !== null && mv !== undefined ? mv : (qty * price);
-
+const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+const value = mv || qty * price;
 
 
       outPositions.push({
@@ -390,45 +385,35 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
-    if (fresh || !userId || !userSecret) {
-      userId = `dev-${Date.now()}`;
-      const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-      userSecret = (reg?.data as any)?.userSecret;
-      if (!userSecret) {
-        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-      }
-    } else {
-      try {
-        await snaptrade.authentication.registerSnapTradeUser({ userId });
-      } catch (e: any) {
-        if (![400, 409].includes(e?.response?.status)) throw e;
-      }
-    }
+if (fresh || !userId || !userSecret) {
+  userId = `dev-${Date.now()}`;
+  const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+  userSecret = (reg?.data as any)?.userSecret;
+  if (!userSecret) {
+    return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
+  }
+} else {
+  try {
+    await snaptrade.authentication.registerSnapTradeUser({ userId });
+  } catch (e: any) {
+    if (![400, 409].includes(e?.response?.status)) throw e;
+  }
+}
+
 
     // store secret for the polling endpoints
 // store secret for the polling endpoints
 putSecret(userId, userSecret);
 
 // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
-let summary;
-console.log(`⏳ Initial sync starting for ${userId}`);
+const summary = await fetchAndSaveUserSummary(userId, userSecret);
 
-do {
-  summary = await fetchAndSaveUserSummary(userId, userSecret);
-
-  console.log(`🔄 Sync status for ${userId}:`, summary.syncing);
-
-  if (summary.syncing) {
-    await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds
-  }
-} while (summary.syncing);
-
-console.log(`✅ User ${userId} fully synced and saved to DB.`);
-
-    
-    
-    // save the user to Postgres
-  await fetchAndSaveUserSummary(userId, userSecret);
+if (summary.accounts.length > 0) {
+  await saveSnaptradeUser(userId, userSecret, summary);
+  console.log(`✅ User ${userId} fully synced and saved to DB.`);
+} else {
+  console.log(`⚠️ No accounts to save for user ${userId}`);
+}
 
 
 
@@ -571,9 +556,8 @@ app.get("/realtime/summary", async (req, res) => {
 
         const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
         const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-        const mv = pickNumber(p?.market_value, p?.marketValue);
-const value = mv !== null && mv !== undefined ? mv : (qty * price);
-
+        const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+        const value = mv ?? qty * price;
 
 
         outPositions.push({
@@ -760,9 +744,8 @@ for (const acct of accounts) {
     const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
     const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
 const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue);
-const value = mv !== null && mv !== undefined ? mv : (qty * price);
-
+const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
+const value = mv || qty * price;
 
 
     outPositions.push({
@@ -828,23 +811,28 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
     res.status(200).send("ok");
 
     // Optional: handle real events with userId/userSecret asynchronously
-   const userId = event.userId;
+ const userId = event.userId;
 if (userId) {
   const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
   if (userSecret) {
-    // Fetch summary for relevant events, not just "user.synced"
-    if (
-      ["ACCOUNT_TRANSACTIONS_INITIAL_UPDATE",
-       "ACCOUNT_TRANSACTIONS_UPDATE",
-       "USER_SYNCED"].includes(event.eventType || event.type)
-    ) {
-      console.log(`Webhook event ${event.eventType} for ${userId}, fetching summary...`);
-      fetchAndSaveUserSummary(userId, userSecret).catch(err =>
-        console.error("Webhook async processing error:", err)
-      );
+    // Wait for sync before saving
+    let summary;
+    let tries = 0;
+    do {
+      summary = await fetchAndSaveUserSummary(userId, userSecret);
+      if (!summary.syncing) break;
+      await new Promise(r => setTimeout(r, 2000));
+      tries++;
+    } while (summary.syncing && tries < 10);
+
+    if (summary.accounts.length) {
+      console.log(`✅ Webhook processed: saved summary for ${userId}`);
+    } else {
+      console.log(`⚠️ Webhook processed but accounts empty for ${userId}`);
     }
   }
 }
+
 
 
   } catch (err) {
@@ -871,3 +859,4 @@ app.listen(PORT, HOST, () => {
   const ips = lanIPs();
   if (ips.length) console.log(`Phone:  http://${ips[0]}:${PORT}/health`);
 });
+

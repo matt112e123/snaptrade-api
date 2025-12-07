@@ -108,6 +108,18 @@ const value = mv || qty * price;
   return summary;
 }
 
+async function fetchUserSecretFromDB(userId: string): Promise<string> {
+  try {
+    const res = await pool.query(
+      'SELECT user_secret FROM snaptrade_users WHERE user_id = $1 LIMIT 1',
+      [userId]
+    );
+    return res.rows[0]?.user_secret || '';
+  } catch (err) {
+    console.error('❌ Failed to fetch userSecret from DB:', err);
+    return '';
+  }
+}
 
 
 /* ------------------------ config / helpers ------------------------ */
@@ -776,7 +788,7 @@ app.post("/webhook/snaptrade", async (req, res) => {
   try {
     const event = req.body;
     const userId = event.userId;
-    const userSecret = event.userSecret || getSecret(userId);
+const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
 
     if (!userId || !userSecret) {
       console.warn("Webhook missing userId or secret:", event);

@@ -3,9 +3,32 @@ import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
 import os from "os";
 import cors from "cors";
+import fs from "fs";
+import path from "path";
 
 import pkg from "pg";
 const { Pool } = pkg;
+
+// Directory for local backups
+const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
+if (!fs.existsSync(LOCAL_SAVE_DIR)) fs.mkdirSync(LOCAL_SAVE_DIR, { recursive: true });
+
+async function saveLocally(userId: string, summary: any, userSecret?: string) {
+  try {
+    const filePath = path.join(LOCAL_SAVE_DIR, `${userId}.json`);
+    const payload = {
+      userId,
+      userSecret: userSecret || "",
+      summary,
+      savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
+    console.log(`✅ Saved user ${userId} locally at ${filePath}`);
+  } catch (err) {
+    console.error("❌ Failed to save user locally:", err);
+  }
+}
+
 
 // 1️⃣ Database connection (top of file)
 const pool = new Pool({
@@ -27,6 +50,8 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
 await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
 
     console.log(`Saved user ${userId} to DB`);
+    await saveLocally(userId, data, userSecret);
+
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
   }

@@ -821,27 +821,23 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
     res.status(200).send("ok");
 
     // Optional: handle real events with userId/userSecret asynchronously
- const userId = event.userId;
+   const userId = event.userId;
 if (userId) {
   const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
   if (userSecret) {
-    // Wait for sync before saving
-    let summary = await fetchAndSaveUserSummary(userId, userSecret);
-
-// ✅ Only save if fully synced and there is at least one account
-if (summary.syncing) {
-  console.log(`⏳ Data not synced yet for ${userId}, will retry in 30 seconds`);
-  setTimeout(async () => {
-    const retrySummary = await fetchAndSaveUserSummary(userId, userSecret);
-    if (!retrySummary.syncing && retrySummary.accounts.length) {
-      await saveSnaptradeUser(userId, userSecret, retrySummary);
-      console.log(`✅ Retry: saved summary for ${userId}`);
+    // Fetch summary for relevant events, not just "user.synced"
+    if (
+      ["ACCOUNT_TRANSACTIONS_INITIAL_UPDATE",
+       "ACCOUNT_TRANSACTIONS_UPDATE",
+       "USER_SYNCED"].includes(event.eventType || event.type)
+    ) {
+      console.log(`Webhook event ${event.eventType} for ${userId}, fetching summary...`);
+      fetchAndSaveUserSummary(userId, userSecret).catch(err =>
+        console.error("Webhook async processing error:", err)
+      );
     }
-  }, 30_000); // retry after 30 seconds
-}
   }
 }
-
 
 
   } catch (err) {

@@ -10,7 +10,7 @@ import pkg from "pg";
 const { Pool } = pkg;
 
 // Use your project folder explicitly
-const LOCAL_SAVE_DIR = path.resolve(__dirname, "../snaptrade_local"); 
+const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
 // If this file is in src/ or dist/, "../" will put it at the project root
 
 if (!fs.existsSync(LOCAL_SAVE_DIR)) {

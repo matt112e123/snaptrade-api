@@ -832,14 +832,14 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
 
     // Try fetchAndSave but increase tries + log responses
     let summary;
-    let tries = 0;
-    do {
-      summary = await fetchAndSaveUserSummary(userId, userSecret);
-      console.log("fetchAndSaveUserSummary result accounts.length:", summary?.accounts?.length);
-      if (!summary.syncing) break;
-      await new Promise(r => setTimeout(r, 2000));
-      tries++;
-    } while (summary.syncing && tries < 20);
+let tries = 0;
+do {
+  summary = await fetchAndSaveUserSummary(userId, userSecret);
+  if (summary.accounts.length > 0) break;  // <--- check this!
+  await new Promise(r => setTimeout(r, 2000));
+  tries++;
+} while (tries < 20);
+
 
     if (summary && summary.accounts && summary.accounts.length) {
       await saveSnaptradeUser(userId, userSecret, summary);

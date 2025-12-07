@@ -13,24 +13,30 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-// 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   try {
-    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
+    console.log("Saving user:", userId, "userSecret present:", Boolean(userSecret));
+    // Sanitize data: ensure an object
+    const payload = (typeof data === "string") ? JSON.parse(data) : data || {};
+    console.log("Saving data keys:", Object.keys(payload));
     const query = `
-  INSERT INTO snaptrade_users (user_id, user_secret, data)
-  VALUES ($1, $2, $3)
-  ON CONFLICT (user_id)
-  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
-`;
-// Explicitly stringify the object for safety
-await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
-
-    console.log(`Saved user ${userId} to DB`);
+      INSERT INTO snaptrade_users (user_id, user_secret, data, created_at, updated_at)
+      VALUES ($1, $2, $3::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      ON CONFLICT (user_id)
+      DO UPDATE SET user_secret = EXCLUDED.user_secret,
+                    data = EXCLUDED.data,
+                    updated_at = CURRENT_TIMESTAMP
+      RETURNING user_id;
+    `;
+    const r = await pool.query(query, [userId, userSecret, JSON.stringify(payload)]);
+    console.log(`Saved user ${userId} to DB (rows: ${r.rowCount})`);
+    return r.rows[0];
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
+    throw err;
   }
 }
+
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
@@ -402,8 +408,9 @@ if (fresh || !userId || !userSecret) {
 
 
     // store secret for the polling endpoints
-// store secret for the polling endpoints
 putSecret(userId, userSecret);
+await saveSnaptradeUser(userId, userSecret, {}); // Save to DBconst summary = await fetchAndSaveUserSummary(userId, userSecret);
+
 
 // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
 const summary = await fetchAndSaveUserSummary(userId, userSecret);
@@ -804,42 +811,51 @@ app.use("/webhook/snaptrade", (req, res, next) => {
 app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
   try {
     const event = req.body;
+    console.log("📦 Incoming webhook:", JSON.stringify(event, null, 2));
+    res.status(200).send("ok"); // reply fast
 
-    console.log("📦 Incoming webhook:", event);
+    const userId = event.userId;
+    if (!userId) {
+      console.warn("Webhook missing userId:", JSON.stringify(event));
+      return;
+    }
 
-    // Respond immediately to SnapTrade to avoid retries
-    res.status(200).send("ok");
+    if (event.userSecret) {
+      console.log("Webhook provided userSecret - saving to DB");
+      await saveSnaptradeUser(userId, event.userSecret, { webhookProvided: true });
+      putSecret(userId, event.userSecret); // refresh in-memory cache
+    }
 
-    // Optional: handle real events with userId/userSecret asynchronously
- const userId = event.userId;
-if (userId) {
-  const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
-  if (userSecret) {
-    // Wait for sync before saving
+    const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
+    if (!userSecret) {
+      console.warn("Webhook processed but no userSecret available for userId:", userId);
+      return;
+    }
+
+    // Try fetchAndSave but increase tries + log responses
     let summary;
     let tries = 0;
     do {
       summary = await fetchAndSaveUserSummary(userId, userSecret);
+      console.log("fetchAndSaveUserSummary result accounts.length:", summary?.accounts?.length);
       if (!summary.syncing) break;
       await new Promise(r => setTimeout(r, 2000));
       tries++;
-    } while (summary.syncing && tries < 10);
+    } while (summary.syncing && tries < 20);
 
-    if (summary.accounts.length) {
+    if (summary && summary.accounts && summary.accounts.length) {
+      await saveSnaptradeUser(userId, userSecret, summary);
       console.log(`✅ Webhook processed: saved summary for ${userId}`);
     } else {
-      console.log(`⚠️ Webhook processed but accounts empty for ${userId}`);
+      console.warn(`⚠️ Webhook processed but accounts empty for ${userId} after ${tries} tries`);
     }
-  }
-}
-
-
 
   } catch (err) {
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
 });
+
 
 /* ---------------------------- 404 last ---------------------------- */
 

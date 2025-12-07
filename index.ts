@@ -426,11 +426,6 @@ do {
 console.log(`✅ User ${userId} fully synced and saved to DB.`);
 
     
-    
-    // save the user to Postgres
-  await fetchAndSaveUserSummary(userId, userSecret);
-
-
 
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
     const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback

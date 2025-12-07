@@ -10,8 +10,9 @@ import pkg from "pg";
 const { Pool } = pkg;
 
 // Directory for local backups
-const LOCAL_SAVE_DIR = path.resolve(__dirname, "snaptrade_local"); // <- use __dirname
+const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
 if (!fs.existsSync(LOCAL_SAVE_DIR)) fs.mkdirSync(LOCAL_SAVE_DIR, { recursive: true });
+console.log("Local save dir:", LOCAL_SAVE_DIR);
 
 async function saveLocally(userId: string, summary: any, userSecret?: string) {
   try {

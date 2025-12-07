@@ -94,6 +94,9 @@ const value = mv !== null && mv !== undefined ? mv : (qty * price);
     const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
     if (initDone === false) syncing = true;
   }
+  if (accounts.length === 0) {
+    syncing = true;
+}
 
   const summary = {
     accounts: accounts.map((a: any, i: number) => ({

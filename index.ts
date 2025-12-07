@@ -289,7 +289,7 @@ function findPositionsArray(root: any): any[] {
 
 type SecretRow = { secret: string; expiresAt: number };
 const USER_SECRETS = new Map<string, SecretRow>();
-const SECRET_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const SECRET_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 
 function putSecret(userId: string, userSecret: string) {
   USER_SECRETS.set(userId, { secret: userSecret, expiresAt: Date.now() + SECRET_TTL_MS });
@@ -441,14 +441,19 @@ let summary;
 console.log(`⏳ Initial sync starting for ${userId}`);
 
 do {
-  summary = await fetchAndSaveUserSummary(userId, userSecret);
+  const summary = await fetchAndSaveUserSummary(userId, userSecret);
 
-  console.log(`🔄 Sync status for ${userId}:`, summary.syncing);
-
-  if (summary.syncing) {
-    await new Promise(r => setTimeout(r, 2000)); // wait 2 seconds
+  // Only save when fully synced
+  if (!summary.syncing) {
+    console.log("✅ Fully synced. Saving FINAL summary.");
+    await saveSnaptradeUser(userId, userSecret, summary);
+    break;
   }
-} while (summary.syncing);
+
+  console.log("⏳ Waiting for full sync...");
+  await new Promise(r => setTimeout(r, 2000));
+} while (true);
+
 
 console.log(`✅ User ${userId} fully synced and saved to DB.`);
 
@@ -549,7 +554,13 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
-    const userSecret = (req.query.userSecret ?? getSecret(userId) ?? "").toString();
+const secretFromCache = getSecret(userId);
+const secretFromDB = await fetchUserSecretFromDB(userId);
+const userSecret = (req.query.userSecret ?? secretFromCache ?? secretFromDB ?? "").toString();
+
+if (!userId || !userSecret || userId === "null" || userSecret === "null") {
+  return res.status(400).json({ error: "Missing userId or userSecret" });
+}
 
     if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       return res.status(400).json({ error: "Missing userId or userSecret" });

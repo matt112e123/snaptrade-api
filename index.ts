@@ -26,15 +26,9 @@ console.log("Local save dir:", LOCAL_SAVE_DIR);
 })();
 
 async function saveLocally(userId: string, summary: any, userSecret?: string) {
-  try {
-    console.log("Attempting to save locally...", LOCAL_SAVE_DIR);
-    const filePath = path.join(LOCAL_SAVE_DIR, `${userId}.json`);
-    const payload = { userId, userSecret: userSecret || "", summary, savedAt: new Date().toISOString() };
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
-    console.log(`✅ Saved user ${userId} locally at ${filePath}`);
-  } catch (err) {
-    console.error("❌ Failed to save user locally:", err);
-  }
+  const filePath = path.join(LOCAL_SAVE_DIR, `${userId}.json`);
+  const payload = { userId, userSecret: userSecret || "", summary, savedAt: new Date().toISOString() };
+  fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf-8");
 }
 
 // 1️⃣ Database connection (top of file)
@@ -51,7 +45,7 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
   INSERT INTO snaptrade_users (user_id, user_secret, data)
   VALUES ($1, $2, $3)
   ON CONFLICT (user_id)
-  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, created_at = CURRENT_TIMESTAMP
+  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
 `;
 // Explicitly stringify the object for safety
 await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
@@ -556,7 +550,7 @@ app.get("/realtime/summary", async (req, res) => {
     const userId = (req.query.userId ?? "").toString();
 const secretFromCache = getSecret(userId);
 const secretFromDB = await fetchUserSecretFromDB(userId);
-const userSecret = (req.query.userSecret ?? secretFromCache ?? secretFromDB ?? "").toString();
+const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
 
 if (!userId || !userSecret || userId === "null" || userSecret === "null") {
   return res.status(400).json({ error: "Missing userId or userSecret" });
@@ -870,13 +864,19 @@ if (userId) {
   if (userSecret) {
     // Wait for sync before saving
     let summary;
-    let tries = 0;
-    do {
-      summary = await fetchAndSaveUserSummary(userId, userSecret);
-      if (!summary.syncing) break;
-      await new Promise(r => setTimeout(r, 2000));
-      tries++;
-    } while (summary.syncing && tries < 10);
+let tries = 0;
+do {
+  summary = await fetchAndSaveUserSummary(userId, userSecret);
+  tries++;
+  if (!summary.syncing) break;
+  if (tries > 30) {
+    console.warn("⚠️ Max tries reached while waiting for sync, saving anyway");
+    break;
+  }
+  await new Promise(r => setTimeout(r, 2000));
+} while (true);
+
+await saveSnaptradeUser(userId, userSecret, summary);
 
     if (summary.accounts.length) {
       console.log(`✅ Webhook processed: saved summary for ${userId}`);

@@ -788,16 +788,22 @@ app.post("/webhook/snaptrade", async (req, res) => {
   try {
     const event = req.body;
     const userId = event.userId;
-const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
 
-    if (!userId || !userSecret) {
-      console.warn("Webhook missing userId or secret:", event);
-      return res.status(400).send("Missing userId or userSecret");
+    if (!userId) {
+      console.warn("Webhook missing userId:", event);
+      // Respond 200 anyway to avoid Snaptrade retries
+      return res.status(200).send("ok");
     }
 
-    res.status(200).send("ok"); // ✅ respond immediately
+    res.status(200).send("ok"); // Always respond immediately
 
-    // async processing
+    // Async processing
+    const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
+    if (!userSecret) {
+      console.log(`UserSecret for ${userId} not yet available. Will try later.`);
+      return;
+    }
+
     if (event.type === "user.synced") {
       console.log(`User ${userId} synced. Fetching full summary...`);
       fetchAndSaveUserSummary(userId, userSecret).catch(err =>
@@ -806,11 +812,13 @@ const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecre
     } else {
       console.log(`Unhandled webhook type: ${event.type}`);
     }
+
   } catch (err) {
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
 });
+
 
 
 /* ---------------------------- 404 last ---------------------------- */

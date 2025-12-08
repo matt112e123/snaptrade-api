@@ -563,13 +563,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
-const secretFromCache = getSecret(userId);
-const secretFromDB = await fetchUserSecretFromDB(userId);
-const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
-
-if (!userId || !userSecret || userId === "null" || userSecret === "null") {
-  return res.status(400).json({ error: "Missing userId or userSecret" });
-}
+    const secretFromCache = getSecret(userId);
+    const secretFromDB = await fetchUserSecretFromDB(userId);
+    const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
 
     if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       return res.status(400).json({ error: "Missing userId or userSecret" });
@@ -579,10 +575,6 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
     const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
     const accounts: any[] = accountsResp.data || [];
 
-    if (!accounts.length) {
-      return res.json({ accounts: [], totals: { equity: 0, cash: 0, buyingPower: 0 }, positions: [], syncing: false });
-    }
-
     let totalValue = 0, totalCash = 0, totalBP = 0;
     const outPositions: any[] = [];
     let syncing = false;
@@ -590,11 +582,10 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
       if (!accountId) continue;
-
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-      const balObj: any = (h.data as any)?.balance || {};
-      const balancesArr: any[] = (h.data as any)?.balances || [];
+      const balObj: any = h.data?.balance || {};
+      const balancesArr: any[] = h.data?.balances || [];
 
       const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
       const acctCash =
@@ -609,7 +600,6 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       totalCash += acctCash ?? 0;
       totalBP += acctBP ?? 0;
 
-
       const posArr: any[] = findPositionsArray(h.data);
       for (const p of posArr) {
         const sym = extractDisplaySymbol(p);
@@ -620,7 +610,6 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
         const price = pickNumber(p?.price, p?.price?.value) ?? 0;
         const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
         const value = mv ?? qty * price;
-
 
         outPositions.push({
           symbol: sym,
@@ -639,7 +628,8 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       if (initDone === false) syncing = true;
     }
 
-    res.json({
+    // 💡 Build summary object FIRST!
+    const summary = {
       accounts: accounts.map((a: any, i: number) => ({
         id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
         name: a.name || a.accountName || "Account",
@@ -653,7 +643,13 @@ if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       },
       positions: outPositions,
       syncing,
-    });
+    };
+
+    // 💾 Now: Save summary to DB
+    await saveSnaptradeUser(userId, userSecret, summary);
+
+    // ✅ Finally, respond!
+    res.json(summary);
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }

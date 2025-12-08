@@ -39,24 +39,39 @@ const pool = new Pool({
 
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
+  // Always try local save first
   try {
-    console.log("Saving user:", userId, "data:", JSON.stringify(data, null, 2)); // <-- ADD THIS
-    const query = `
-  INSERT INTO snaptrade_users (user_id, user_secret, data)
-  VALUES ($1, $2, $3)
-  ON CONFLICT (user_id)
-  DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
-`;
-// Explicitly stringify the object for safety
-await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
-
-    console.log(`Saved user ${userId} to DB`);
     await saveLocally(userId, data, userSecret);
+    console.log(`✅ Saved ${userId} locally`);
+  } catch (err) {
+    console.error("❌ Failed to save locally:", err);
+  }
 
+  // DO NOT save empty summaries to DB
+  if (
+    data && typeof data === "object" &&
+    Array.isArray(data.accounts) && Array.isArray(data.positions) &&
+    data.accounts.length === 0 && data.positions.length === 0
+  ) {
+    console.warn(`⚠️ Skipped DB save for ${userId}: summary is empty accounts & positions`);
+    return; // This is the fix. Do not update DB with junk!
+  }
+
+  // Then try DB save (if not empty)
+  try {
+    const query = `
+      INSERT INTO snaptrade_users (user_id, user_secret, data)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id)
+      DO UPDATE SET user_secret = EXCLUDED.user_secret, data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
+    `;
+    await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
+    console.log(`✅ Saved ${userId} to DB`);
   } catch (err) {
     console.error("❌ Failed to save user to DB:", err);
   }
 }
+
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {

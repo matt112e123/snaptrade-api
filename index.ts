@@ -82,6 +82,7 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
   const accounts: any[] = accountsResp.data || [];
+const activitiesByAccount: Record<string, any[]> = {};
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
   const outPositions: any[] = [];
@@ -92,6 +93,23 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+    
+      // NEW: Fetch activities (transactions/events)
+ let activities: any[] = [];
+try {
+  const activityResp = await snaptrade.accountInformation.getAccountActivities({
+    accountId,
+    userId,
+    userSecret
+  });
+  // Make sure it's an array
+  activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+} catch (err) {
+  console.error(`Failed to fetch activities for account ${accountId}:`, err);
+}
+activitiesByAccount[accountId] = activities;
+
+  
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 
@@ -144,6 +162,7 @@ const value = mv || qty * price;
       buyingPower: totalBP,
     },
     positions: outPositions,
+    activitiesByAccount, 
     syncing,
   };
 

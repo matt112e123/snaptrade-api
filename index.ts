@@ -597,12 +597,26 @@ app.get("/realtime/summary", async (req, res) => {
     let totalValue = 0, totalCash = 0, totalBP = 0;
     const outPositions: any[] = [];
     let syncing = false;
+    
+    const activitiesByAccount: Record<string, any[]> = {};    // <-- Declare here
 
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
       if (!accountId) continue;
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
+        let activities: any[] = [];
+      try {
+        const activityResp = await snaptrade.accountInformation.getAccountActivities({
+          accountId,
+          userId,
+          userSecret
+        });
+        activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+      } catch (err) {
+        console.error(`Failed to fetch activities for account ${accountId}:`, err);
+      }
+      activitiesByAccount[accountId] = activities;   //
       const balObj: any = h.data?.balance || {};
       const balancesArr: any[] = h.data?.balances || [];
 
@@ -646,7 +660,8 @@ app.get("/realtime/summary", async (req, res) => {
       const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
       if (initDone === false) syncing = true;
     }
-
+    
+    
     // 💡 Build summary object FIRST!
     const summary = {
       accounts: accounts.map((a: any, i: number) => ({
@@ -661,6 +676,7 @@ app.get("/realtime/summary", async (req, res) => {
         buyingPower: totalBP,
       },
       positions: outPositions,
+      activitiesByAccount,  
       syncing,
     };
 

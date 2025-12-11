@@ -950,132 +950,145 @@ app.post("/snaptrade/saveUser", async (req, res) => {
       return res.status(400).json({ error: "Missing userId or userSecret" });
     }
 
-    // 1️⃣ Create SnapTrade client
     const snaptrade = mkClient();
 
-      // 🔹 ADD LOGS HERE 🔹
-    console.log("Fetching accounts for", { userId, userSecret });
+    console.log("Fetching accounts for", { userId /* do not log secret in prod */ });
 
-   // 1️⃣ Fetch accounts
+    const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+    console.log("Accounts response:", JSON.stringify(accountsResp.data || [], null, 2));
 
-   console.log("Fetching accounts for", { userId, userSecret });
-const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+    const accounts = accountsResp.data || [];
 
-    console.log("Accounts response:", JSON.stringify(accountsResp.data, null, 2));
+    let totalValue = 0, totalCash = 0, totalBP = 0;
+    const outPositions = [];
+    let syncing = false;
 
-const accounts: any[] = accountsResp.data || [];
-
-let totalValue = 0, totalCash = 0, totalBP = 0;
-const outPositions: any[] = [];
-let syncing = false;
-
-for (const acct of accounts) {
-  const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
-  if (!accountId) continue;
-
-  // 2️⃣ Get holdings for each account
-  const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-
-  // 3️⃣ Extract balances
-  const balObj: any = h.data?.balance || {};
-  const balancesArr: any[] = h.data?.balances || [];
-  const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-  const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
-  const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
-
-  totalValue += acctTotal ?? 0;
-  totalCash += acctCash ?? 0;
-  totalBP += acctBP ?? 0;
+    // <-- NEW: collect activities per account
+const activitiesByAccount: Record<string, any[]> = {};
 
 
-  // 4️⃣ Extract positions
-   // 4️⃣ Extract positions — prefer explicit positions arrays; fallback to generic finder
-  const explicitPositions =
-    (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
-    findPositionsArray(h.data) ||
-    [];
+    for (const acct of accounts) {
+      const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
+      if (!accountId) continue;
 
-  for (const p of explicitPositions) {
-    const sym = extractDisplaySymbol(p);
+      // Get holdings for each account
+      const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-    const symbolId = pickStringStrict(
-      p?.universal_symbol?.id,
-      p?.symbol?.id,
-      p?.symbol_id,
-      p?.security_id,
-      p?.instrument_id,
-      p?.id,
-      sym
-    ) || sym;
+      // <-- NEW: fetch activities for this account (transactions / events)
+      let activities = [];
+      try {
+        const activityResp = await snaptrade.accountInformation.getAccountActivities({
+          accountId,
+          userId,
+          userSecret
+        });
+        activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+        if (activities.length) {
+          console.log(`Fetched ${activities.length} activities for account ${accountId}`);
+        }
+      } catch (err) {
+        console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
+      }
+      activitiesByAccount[accountId] = activities;
 
-    // Quantity: support units, filled_quantity, quantity, qty, total_quantity
-    let qty = pickNumber(
-      p?.units,
-      p?.filled_quantity,
-      p?.filledQuantity,
-      p?.quantity,
-      p?.qty,
-      p?.total_quantity
-    ) ?? 0;
+      // Extract balances
+      const balObj = h.data?.balance || {};
+      const balancesArr = h.data?.balances || [];
+      const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
+      const acctCash =
+        pickNumber(balObj?.cash, balObj?.cash?.amount) ||
+        pickNumber(balancesArr.find(b => b?.cash != null) || {});
+      const acctBP =
+        pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) ||
+        pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) ||
+        acctCash;
 
-    // Price: try several common fields
-    let price = pickNumber(
-      p?.price,
-      p?.execution_price,
-      p?.executionPrice,
-      p?.average_purchase_price,
-      p?.averagePrice,
-      p?.last_trade_price
-    );
+      totalValue += acctTotal ?? 0;
+      totalCash += acctCash ?? 0;
+      totalBP += acctBP ?? 0;
 
-    // Market value if present
-    const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
+      // Extract positions (existing logic)
+      const explicitPositions =
+        (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
+        findPositionsArray(h.data) ||
+        [];
 
-    // If price missing but market value and qty present, derive price
-    if ((price === null || price === undefined) && mv && qty) {
-      price = mv / qty;
+      for (const p of explicitPositions) {
+        const sym = extractDisplaySymbol(p);
+
+        const symbolId = pickStringStrict(
+          p?.universal_symbol?.id,
+          p?.symbol?.id,
+          p?.symbol_id,
+          p?.security_id,
+          p?.instrument_id,
+          p?.id,
+          sym
+        ) || sym;
+
+        let qty = pickNumber(
+          p?.units,
+          p?.filled_quantity,
+          p?.filledQuantity,
+          p?.quantity,
+          p?.qty,
+          p?.total_quantity
+        ) ?? 0;
+
+        let price = pickNumber(
+          p?.price,
+          p?.execution_price,
+          p?.executionPrice,
+          p?.average_purchase_price,
+          p?.averagePrice,
+          p?.last_trade_price
+        );
+
+        const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
+
+        if ((price === null || price === undefined) && mv && qty) {
+          price = mv / qty;
+        }
+        price = price ?? 0;
+
+        const value = (mv != null && mv !== undefined) ? mv : (qty * price);
+
+        outPositions.push({
+          symbol: sym,
+          symbolId,
+          needsMapping: UUID_RE.test(sym),
+          name: extractDisplayName(p),
+          quantity: qty,
+          price,
+          value,
+          isCrypto: isCryptoPosition(p),
+        });
+      }
+
+      const ss = h.data?.sync_status || h.data?.syncStatus;
+      const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
+      if (initDone === false) syncing = true;
     }
-    price = price ?? 0;
 
-    const value = (mv != null && mv !== undefined) ? mv : (qty * price);
+    // Build and save summary INCLUDING activitiesByAccount
+    const summary = {
+      accounts: accounts.map((a, i) => ({
+        id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+        name: a.name || a.accountName || "Account",
+        currency: a.currency || "USD",
+        type: a.type || a.accountType || "BROKERAGE",
+      })),
+      totals: {
+        equity: Math.max(0, totalValue - totalCash),
+        cash: totalCash,
+        buyingPower: totalBP,
+      },
+      positions: outPositions,
+      activitiesByAccount,   // <- now included and will be saved to DB
+      syncing,
+    };
 
-    outPositions.push({
-      symbol: sym,
-      symbolId,
-      needsMapping: UUID_RE.test(sym),
-      name: extractDisplayName(p),
-      quantity: qty,
-      price,
-      value,
-      isCrypto: isCryptoPosition(p),
-    });
-  }
-
-  const ss: any = h.data?.sync_status || h.data?.syncStatus;
-  const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
-  if (initDone === false) syncing = true;
-}
-
-// 5️⃣ Build summary object
-const summary = {
-  accounts: accounts.map((a: any, i: number) => ({
-    id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-    name: a.name || a.accountName || "Account",
-    currency: a.currency || "USD",
-    type: a.type || a.accountType || "BROKERAGE",
-  })),
-  totals: {
-    equity: Math.max(0, totalValue - totalCash),
-    cash: totalCash,
-    buyingPower: totalBP,
-  },
-  positions: outPositions,
-  syncing,
-};
-
-// 6️⃣ Save the full summary to DB
-await saveSnaptradeUser(userId, userSecret, summary);
-
+    await saveSnaptradeUser(userId, userSecret, summary);
 
     res.json({ success: true, saved: summary });
   } catch (err) {

@@ -171,8 +171,7 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     // Fetch full holdings for this account
-    const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-
+const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
     // Save the full raw holdings to dedicated table and keep in-memory copy for summary
     try {
       await saveAccountHoldingsToDB(userId, accountId, h.data);
@@ -1090,42 +1089,36 @@ app.get("/debug/holdings", async (req, res) => {
  * - If not found, fall back to listUserAccounts and inspect account fields.
  * Returns: { ok: boolean, reason?: string, reauthUrl?: string }
  */
+// Replace existing ensureTradingEnabled(...) with this implementation
 async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: string, accountId?: string) {
   try {
-    // 1) Look through authorizations
     let authsResp: any = null;
     try {
       authsResp = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
     } catch (e: any) {
-      // ignore — we'll try accounts next
       console.warn("Could not listBrokerageAuthorizations:", (e && e.message) || e);
+      authsResp = null;
     }
     const auths = authsResp?.data || [];
 
-    // Find an auth that references this accountId (accountId might appear as id or in account_ids array)
     let matchedAuth: any = null;
     if (Array.isArray(auths) && auths.length && accountId) {
       for (const a of auths) {
-        // common shapes
         const ids = a?.account_ids || a?.accounts || (Array.isArray(a?.accountIds) ? a.accountIds : undefined);
-        const directId = a?.id || a?.connection_id || a?.connectionId || a?.authorizationId;
         if (typeof a?.account_id === "string" && a.account_id === accountId) { matchedAuth = a; break; }
         if (Array.isArray(ids) && ids.includes(accountId)) { matchedAuth = a; break; }
-        // some authorizations may include accounts with nested ids
         if (Array.isArray(a?.accounts)) {
           for (const acct of a.accounts) {
             if ((acct?.id || acct?.accountId || acct?.account_id || acct?.number) === accountId) { matchedAuth = a; break; }
           }
           if (matchedAuth) break;
         }
-        // fallback: maybe authorization contains an account object referencing the account id
         if ((a?.account || a?.account_info) && ((a.account?.id || a.account?.accountId || a.account?.number) === accountId)) {
           matchedAuth = a; break;
         }
       }
     }
 
-    // If we found an auth, check known flags that suggest trading is enabled
     if (matchedAuth) {
       const perms = Array.isArray(matchedAuth?.permissions) ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase()) : [];
       const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
@@ -1133,7 +1126,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
         return { ok: true };
       }
 
-      // Not enabled: generate reauth URL if we have an id to reconnect
+      // Try to generate reconnect reauth URL to upgrade to trading
       const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
       if (reconnectId) {
         try {
@@ -1145,9 +1138,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
             reconnect: reconnectId,
           });
           const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-          if (candidate) {
-            return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-          }
+          if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
         } catch (e: any) {
           console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
         }
@@ -1156,14 +1147,13 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       return { ok: false, reason: "trade_not_enabled" };
     }
 
-    // If no matched auth found, try to inspect accounts
+    // Inspect account objects for trading flags
     try {
       const aResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
       const accounts = aResp?.data || [];
       for (const acct of accounts) {
         const aid = acct?.id || acct?.accountId || acct?.number || acct?.guid;
         if (!accountId || aid === accountId) {
-          // look for common trading flags on account objects
           const accFlags = [
             acct?.trading_enabled,
             acct?.supports_trading,
@@ -1178,14 +1168,26 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       console.warn("Could not listUserAccounts while checking trading support:", (e && e.message) || e);
     }
 
-    // No evidence that trading is enabled
+    // Final fallback: try building a generic login link that requests trading
+    try {
+      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+        userId,
+        userSecret,
+        immediateRedirect: false,
+        connectionType: "trade",
+      });
+      const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+    } catch (e: any) {
+      console.warn("Could not build generic reauth link:", (e && e.message) || e);
+    }
+
     return { ok: false, reason: "no_trading_authorization_found" };
   } catch (err: any) {
     console.error("ensureTradingEnabled error:", err);
     return { ok: false, reason: "error_checking" };
   }
 }
-
 /* ----------------------- Trade: Place Order (New) ----------------------- */
 /**
  * Sample request payload:

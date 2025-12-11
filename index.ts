@@ -505,24 +505,19 @@ app.get('/market/history/:symbol', async (req, res) => {
     const dayFmt = (d: string) => d; // assume already "YYYY-MM-DD" or "YYYY-MM-DD HH:mm:ss"
     let values = items
       .map((it: any) => {
+        // date candidates
         const dateStr = it.date || it.datetime || it.time || it.timestamp;
-        const close = (it.close !== undefined) ? Number(it.close) : (it.adjClose !== undefined ? Number(it.adjClose) : NaN);
-        return (dateStr && !Number.isNaN(close)) ? { date: dateStr, close } : null;
+        // close candidates: cover different FMP shapes (price, close, adjClose, close_price)
+        const closeCandidate = it.close ?? it.price ?? it.adjClose ?? it.closePrice ?? it.close_price ?? it.close;
+        const close = (closeCandidate !== undefined && closeCandidate !== null) ? Number(closeCandidate) : NaN;
+        return (dateStr && !Number.isNaN(close)) ? { date: String(dateStr).split(' ')[0], close } : null;
       })
       .filter(Boolean) as { date: string; close: number }[];
-
-    // Normalize date strings to YYYY-MM-DD when possible (strip time)
-    values = values.map(v => {
-      const d = String(v.date);
-      // keep only YYYY-MM-DD portion
-      const short = d.split(' ')[0];
-      return { date: short, close: v.close };
-    });
 
     // Sort ascending by date
     values.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-    // Filter by from/to if provided
+    // Filter by from/to if provided (both in "YYYY-MM-DD" form)
     if (from) values = values.filter(v => v.date >= from);
     if (to) values = values.filter(v => v.date <= to);
 

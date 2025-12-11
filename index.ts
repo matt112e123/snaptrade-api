@@ -1,4 +1,3 @@
-/* (full corrected file contents) */
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
@@ -464,8 +463,28 @@ setInterval(() => {
 
 /* ------------------------------ app ------------------------------ */
 
+
 const app = express();
 app.use(express.json());
+
+// --- DEBUG: startup logging, error handlers and ping route ---
+
+console.log("NODE_ENV=", process.env.NODE_ENV || "(unset)");
+console.log("SNAPTRADE_CLIENT_ID set:", !!process.env.SNAPTRADE_CLIENT_ID);
+console.log("SNAPTRADE_CONSUMER_KEY set:", !!process.env.SNAPTRADE_CONSUMER_KEY);
+console.log("DATABASE_URL set:", !!process.env.DATABASE_URL);
+
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err && err.stack ? err.stack : err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
+
+// Simple debug route that must exist on this exact deployment
+app.get("/debug/ping", (_req, res) => {
+  res.json({ ok: true, now: new Date().toISOString() });
+});
 
 /* ------------------------------- CORS ------------------------------ */
 
@@ -795,8 +814,6 @@ app.get("/realtime/linked", async (req, res) => {
 
 /* ------------- Real-time: summary (balances + positions) ---------- */
 
-
-
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
@@ -951,6 +968,67 @@ for (const p of explicitPositions) {
     // ✅ Finally, respond!
     res.json(summary);
   } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+/**
+ * GET /realtime/trading
+ * Returns: { accounts: [ { accountId, name, tradingEnabled, reason?, reauthUrl? } ] }
+ *
+ * Expects userId and optionally userSecret (will fall back to cached secret / DB secret)
+ */
+app.get("/realtime/trading", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "");
+    const secretFromCache = getSecret(userId);
+    const secretFromDB = await fetchUserSecretFromDB(userId);
+    const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
+
+    if (!userId || !userSecret || userId === "null" || userSecret === "null") {
+      return res.status(400).json({ error: "Missing userId or userSecret" });
+    }
+
+    const snaptrade = mkClient();
+
+    // Get accounts once
+    let accountsResp;
+    try {
+      accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+    } catch (err) {
+      console.warn("Could not listUserAccounts in /realtime/trading:", errPayload(err));
+      return res.status(500).json({ error: "Could not fetch accounts" });
+    }
+    const accounts = accountsResp?.data || [];
+
+    // Also fetch authorizations (so ensureTradingEnabled can use them quickly)
+    let authsResp = null;
+    try {
+      authsResp = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+    } catch (e) {
+      // ignore, ensureTradingEnabled will attempt accounts fallback
+      authsResp = null;
+    }
+
+    // Build per-account capability info (run checks in parallel)
+    const results = await Promise.all(accounts.map(async (acct) => {
+      const accountId = acct?.id || acct?.accountId || acct?.number || acct?.guid || String(acct?.id || "");
+      const displayName = acct?.name || acct?.accountName || acct?.currency || `Account ${accountId}`;
+
+      // ensureTradingEnabled returns { ok: boolean, reason?: string, reauthUrl?: string }
+      const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+
+      return {
+        accountId,
+        name: displayName,
+        tradingEnabled: Boolean(check.ok),
+        reason: check.ok ? undefined : (check.reason || undefined),
+        reauthUrl: check.reauthUrl || undefined
+      };
+    }));
+
+    res.json({ accounts: results });
+  } catch (err) {
     res.status(500).json(errPayload(err));
   }
 });

@@ -1,3 +1,4 @@
+/* (full corrected file contents) */
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
@@ -53,7 +54,7 @@ async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHol
   try {
     await pool.query(sql, [userId, accountId, JSON.stringify(rawHoldings)]);
     console.log(`✅ Saved holdings for ${userId}/${accountId}`);
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Failed to save account holdings:", errPayload(err));
   }
 }
@@ -103,7 +104,7 @@ async function saveActivitiesToDB(userId: string, accountId: string, activities:
   try {
     await pool.query(sql, vals);
     console.log(`✅ Wrote/updated ${activities.length} activities for ${userId}/${accountId}`);
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Failed to write activities to DB:", errPayload(err));
   }
 }
@@ -114,7 +115,7 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
   try {
     await saveLocally(userId, data, userSecret);
     console.log(`✅ Saved ${userId} locally`);
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Failed to save locally:", err);
   }
 
@@ -143,7 +144,7 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
     `;
     await pool.query(query, [userId, userSecret, JSON.stringify(data)]);
     console.log(`✅ Saved ${userId} to DB`);
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Failed to save user to DB:", err);
   }
 }
@@ -176,7 +177,7 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     // Save the full raw holdings to dedicated table and keep in-memory copy for summary
     try {
       await saveAccountHoldingsToDB(userId, accountId, h.data);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Failed to save account holdings:", errPayload(e));
     }
     holdingsByAccount[accountId] = h.data;
@@ -190,7 +191,7 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
       if (!Array.isArray(activityResp.data)) {
         console.log('activityResp.data sample:', JSON.stringify(activityResp.data).slice(0, 2000));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
     }
 
@@ -302,7 +303,7 @@ async function fetchUserSecretFromDB(userId: string): Promise<string> {
       [userId]
     );
     return res.rows[0]?.user_secret || '';
-  } catch (err) {
+  } catch (err: any) {
     console.error('❌ Failed to fetch userSecret from DB:', err);
     return '';
   }
@@ -558,7 +559,7 @@ app.get('/market/history/:symbol', async (req, res) => {
     const resp = await fetch(url);
     const text = await resp.text();
     let json: any = null;
-    try { json = JSON.parse(text); } catch (e) { json = null; }
+    try { json = JSON.parse(text); } catch (e: any) { json = null; }
 
     if (!resp.ok) {
       // If FMP returned an informative JSON error, forward it
@@ -610,7 +611,7 @@ app.get('/market/history/:symbol', async (req, res) => {
     MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: payload });
 
     return res.json(payload);
-  } catch (err) {
+  } catch (err: any) {
     console.error('Market history (FMP light) error', err);
     res.status(500).json({ error: 'server error', detail: String(err) });
   }
@@ -721,13 +722,23 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
       custom ||
       (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
 
+    // Accept optional connectionType and reconnect parameters from the request/query
+    // Allowed: "trade", "trade-if-available", "read"
+    const allowedTypes = new Set(["trade", "trade-if-available", "read"]);
+    let connectionType = String(req.query.connectionType || "trade-if-available");
+    if (!allowedTypes.has(connectionType)) connectionType = "trade-if-available";
+
+    // reconnect is optional - used to re-authorize an existing connection for trading
+    const reconnect = typeof req.query.reconnect === "string" && req.query.reconnect.trim() ? String(req.query.reconnect).trim() : undefined;
+
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
       userId,
       userSecret,
       immediateRedirect: true,
       customRedirect: requested,
-      // ⚡️ THIS IS THE CRITICAL CHANGE: "trade" for trading, "read" for read-only
-      connectionType: "trade-if-available",
+      // cast to satisfy the SDK type (enum)
+      connectionType: connectionType as any,
+      ...(reconnect ? { reconnect } : {}),
     });
 
 
@@ -768,12 +779,12 @@ app.get("/realtime/linked", async (req, res) => {
     try {
       const r = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
       linked = (r.data?.length ?? 0) > 0;
-    } catch {}
+    } catch (e: any) {}
     if (!linked) {
       try {
         const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
         linked = (r.data?.length ?? 0) > 0;
-      } catch {}
+      } catch (e: any) {}
     }
 
     res.json({ linked });
@@ -814,7 +825,7 @@ const holdingsByAccount: Record<string, any> = {};
       // Save full raw holdings into dedicated table and keep for the summary
 try {
   await saveAccountHoldingsToDB(userId, accountId, h.data);
-} catch (e) {
+} catch (e: any) {
   console.error("Failed to save account holdings:", errPayload(e));
 }
 holdingsByAccount[accountId] = h.data;
@@ -826,8 +837,8 @@ holdingsByAccount[accountId] = h.data;
           userSecret
         });
         activities = Array.isArray(activityResp.data) ? activityResp.data : [];
-      } catch (err) {
-        console.error(`Failed to fetch activities for account ${accountId}:`, err);
+      } catch (err: any) {
+        console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
       }
       activitiesByAccount[accountId] = activities;   //
       const balObj: any = h.data?.balance || {};
@@ -967,6 +978,110 @@ app.get("/debug/holdings", async (req, res) => {
   }
 });
 
+/* ----------------------- Trade helpers ----------------------- */
+
+/**
+ * Try to determine whether the specified accountId has trading enabled.
+ * - First, check listBrokerageAuthorizations for an auth that references the account and look for common trading flags.
+ * - If not found, fall back to listUserAccounts and inspect account fields.
+ * Returns: { ok: boolean, reason?: string, reauthUrl?: string }
+ */
+async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: string, accountId?: string) {
+  try {
+    // 1) Look through authorizations
+    let authsResp: any = null;
+    try {
+      authsResp = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+    } catch (e: any) {
+      // ignore — we'll try accounts next
+      console.warn("Could not listBrokerageAuthorizations:", (e && e.message) || e);
+    }
+    const auths = authsResp?.data || [];
+
+    // Find an auth that references this accountId (accountId might appear as id or in account_ids array)
+    let matchedAuth: any = null;
+    if (Array.isArray(auths) && auths.length && accountId) {
+      for (const a of auths) {
+        // common shapes
+        const ids = a?.account_ids || a?.accounts || (Array.isArray(a?.accountIds) ? a.accountIds : undefined);
+        const directId = a?.id || a?.connection_id || a?.connectionId || a?.authorizationId;
+        if (typeof a?.account_id === "string" && a.account_id === accountId) { matchedAuth = a; break; }
+        if (Array.isArray(ids) && ids.includes(accountId)) { matchedAuth = a; break; }
+        // some authorizations may include accounts with nested ids
+        if (Array.isArray(a?.accounts)) {
+          for (const acct of a.accounts) {
+            if ((acct?.id || acct?.accountId || acct?.account_id || acct?.number) === accountId) { matchedAuth = a; break; }
+          }
+          if (matchedAuth) break;
+        }
+        // fallback: maybe authorization contains an account object referencing the account id
+        if ((a?.account || a?.account_info) && ((a.account?.id || a.account?.accountId || a.account?.number) === accountId)) {
+          matchedAuth = a; break;
+        }
+      }
+    }
+
+    // If we found an auth, check known flags that suggest trading is enabled
+    if (matchedAuth) {
+      const perms = Array.isArray(matchedAuth?.permissions) ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase()) : [];
+      const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
+      if (tradingFlag === true || perms.includes("trade") || perms.includes("trading") || perms.includes("orders")) {
+        return { ok: true };
+      }
+
+      // Not enabled: generate reauth URL if we have an id to reconnect
+      const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
+      if (reconnectId) {
+        try {
+          const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+            userId,
+            userSecret,
+            immediateRedirect: false,
+            connectionType: "trade",
+            reconnect: reconnectId,
+          });
+          const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+          if (candidate) {
+            return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+          }
+        } catch (e: any) {
+          console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
+        }
+      }
+
+      return { ok: false, reason: "trade_not_enabled" };
+    }
+
+    // If no matched auth found, try to inspect accounts
+    try {
+      const aResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+      const accounts = aResp?.data || [];
+      for (const acct of accounts) {
+        const aid = acct?.id || acct?.accountId || acct?.number || acct?.guid;
+        if (!accountId || aid === accountId) {
+          // look for common trading flags on account objects
+          const accFlags = [
+            acct?.trading_enabled,
+            acct?.supports_trading,
+            acct?.allow_trading,
+            acct?.canTrade,
+            acct?.permissions && Array.isArray(acct.permissions) && acct.permissions.map((p: any) => String(p).toLowerCase()).includes("trade")
+          ];
+          if (accFlags.some(f => f === true)) return { ok: true };
+        }
+      }
+    } catch (e: any) {
+      console.warn("Could not listUserAccounts while checking trading support:", (e && e.message) || e);
+    }
+
+    // No evidence that trading is enabled
+    return { ok: false, reason: "no_trading_authorization_found" };
+  } catch (err: any) {
+    console.error("ensureTradingEnabled error:", err);
+    return { ok: false, reason: "error_checking" };
+  }
+}
+
 /* ----------------------- Trade: Place Order (New) ----------------------- */
 /**
  * Sample request payload:
@@ -994,8 +1109,21 @@ app.post("/trade/placeOrder", async (req, res) => {
       limitPrice,
     } = req.body;
 
+    if (!userId || !userSecret || !accountId || !symbol || !action || !orderType || !quantity) {
+      return res.status(400).json({ error: "Missing required fields (userId,userSecret,accountId,symbol,action,orderType,quantity)" });
+    }
+
     const snaptrade = mkClient();
 
+    // Validate trading capability before placing order
+    const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+    if (!check.ok) {
+      const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
+      if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
+      return res.status(403).json(payload);
+    }
+
+    // Place order
     const order = await (snaptrade.trading as any).placeOrder({
       userId,
       userSecret,
@@ -1069,7 +1197,7 @@ app.post("/snaptrade/saveUser", async (req, res) => {
       // Save full raw holdings into dedicated table and keep for summary
       try {
         await saveAccountHoldingsToDB(userId, accountId, h.data);
-      } catch (e) {
+      } catch (e: any) {
         console.error("Failed to save account holdings:", errPayload(e));
       }
       holdingsByAccount[accountId] = h.data;
@@ -1082,7 +1210,7 @@ app.post("/snaptrade/saveUser", async (req, res) => {
         if (activities.length) {
           console.log(`Fetched ${activities.length} activities for account ${accountId}`);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
       }
 
@@ -1184,7 +1312,7 @@ app.post("/snaptrade/saveUser", async (req, res) => {
 
     await saveSnaptradeUser(userId, userSecret, summary);
     res.json({ success: true, saved: summary });
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Failed to save user:", err);
     res.status(500).json({ error: "Failed to save user" });
   }
@@ -1238,7 +1366,7 @@ await saveSnaptradeUser(userId, userSecret, summary);
 
 
 
-  } catch (err) {
+  } catch (err: any) {
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
@@ -1262,4 +1390,3 @@ app.listen(PORT, HOST, () => {
   const ips = lanIPs();
   if (ips.length) console.log(`Phone:  http://${ips[0]}:${PORT}/health`);
 });
-

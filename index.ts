@@ -463,7 +463,6 @@ setInterval(() => {
 
 /* ------------------------------ app ------------------------------ */
 
-
 const app = express();
 app.use(express.json());
 
@@ -978,6 +977,7 @@ for (const p of explicitPositions) {
  *
  * Expects userId and optionally userSecret (will fall back to cached secret / DB secret)
  */
+// ---------- Resilient /realtime/trading handler (with DB fallback) ----------
 app.get("/realtime/trading", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
@@ -991,23 +991,39 @@ app.get("/realtime/trading", async (req, res) => {
 
     const snaptrade = mkClient();
 
-    // Get accounts once
-    let accountsResp;
+    // Try to fetch accounts live from SnapTrade
+    let accounts: any[] = [];
     try {
-      accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+      const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+      accounts = accountsResp?.data || [];
     } catch (err) {
       console.warn("Could not listUserAccounts in /realtime/trading:", errPayload(err));
-      return res.status(500).json({ error: "Could not fetch accounts" });
+      // FALLBACK: attempt to read last-saved summary from DB and return accounts from it
+      try {
+        const q = 'SELECT data FROM snaptrade_users WHERE user_id = $1 LIMIT 1';
+        const r = await pool.query(q, [userId]);
+        const row = r.rows[0];
+        if (row && row.data) {
+          const stored = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+          if (Array.isArray(stored.accounts)) {
+            accounts = stored.accounts.map((a: any) => ({
+              id: a.id ?? a.accountId ?? a.number ?? a.guid,
+              name: a.name ?? a.accountName ?? a.currency ?? `Account ${a.id}`
+            }));
+            console.log(`Using cached ${accounts.length} accounts from DB for ${userId}`);
+          }
+        }
+      } catch (dbErr) {
+        console.warn("Failed to load cached accounts from DB as fallback:", dbErr);
+        return res.status(500).json({ error: "Could not fetch accounts" });
+      }
     }
-    const accounts = accountsResp?.data || [];
 
-    // Also fetch authorizations (so ensureTradingEnabled can use them quickly)
-    let authsResp = null;
+    // Also attempt to fetch authorizations (best-effort)
     try {
-      authsResp = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+      await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
     } catch (e) {
-      // ignore, ensureTradingEnabled will attempt accounts fallback
-      authsResp = null;
+      // ignore — ensureTradingEnabled handles best-effort checks
     }
 
     // Build per-account capability info (run checks in parallel)
@@ -1015,16 +1031,25 @@ app.get("/realtime/trading", async (req, res) => {
       const accountId = acct?.id || acct?.accountId || acct?.number || acct?.guid || String(acct?.id || "");
       const displayName = acct?.name || acct?.accountName || acct?.currency || `Account ${accountId}`;
 
-      // ensureTradingEnabled returns { ok: boolean, reason?: string, reauthUrl?: string }
-      const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
-
-      return {
-        accountId,
-        name: displayName,
-        tradingEnabled: Boolean(check.ok),
-        reason: check.ok ? undefined : (check.reason || undefined),
-        reauthUrl: check.reauthUrl || undefined
-      };
+      try {
+        const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+        return {
+          accountId,
+          name: displayName,
+          tradingEnabled: Boolean(check.ok),
+          reason: check.ok ? undefined : (check.reason || undefined),
+          reauthUrl: check.reauthUrl || undefined
+        };
+      } catch (err) {
+        console.warn(`ensureTradingEnabled failed for ${accountId}:`, errPayload(err));
+        return {
+          accountId,
+          name: displayName,
+          tradingEnabled: false,
+          reason: "error_checking",
+          reauthUrl: undefined
+        };
+      }
     }));
 
     res.json({ accounts: results });
@@ -1032,7 +1057,6 @@ app.get("/realtime/trading", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
-
 /* -------------------------- debug: holdings ------------------------ */
 
 app.get("/debug/holdings", async (req, res) => {

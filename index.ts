@@ -9,6 +9,9 @@ import path from "path";
 import pkg from "pg";
 const { Pool } = pkg;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+
 // Use your project folder explicitly
 const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
 // If this file is in src/ or dist/, "../" will put it at the project root
@@ -75,14 +78,14 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
 
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
-    console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
+  console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
 
   const snaptrade = mkClient();
 
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
   const accounts: any[] = accountsResp.data || [];
-const activitiesByAccount: Record<string, any[]> = {};
+  const activitiesByAccount: Record<string, any[]> = {};
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
   const outPositions: any[] = [];
@@ -93,44 +96,81 @@ const activitiesByAccount: Record<string, any[]> = {};
     if (!accountId) continue;
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-    
-      // NEW: Fetch activities (transactions/events)
- let activities: any[] = [];
-try {
-  const activityResp = await snaptrade.accountInformation.getAccountActivities({
-    accountId,
-    userId,
-    userSecret
-  });
-  // Make sure it's an array
-  activities = Array.isArray(activityResp.data) ? activityResp.data : [];
-} catch (err) {
-  console.error(`Failed to fetch activities for account ${accountId}:`, err);
-}
-activitiesByAccount[accountId] = activities;
 
-  
+    // Fetch activities (transactions/events)
+    let activities: any[] = [];
+    try {
+      const activityResp = await snaptrade.accountInformation.getAccountActivities({
+        accountId,
+        userId,
+        userSecret
+      });
+      activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+    } catch (err) {
+      console.error(`Failed to fetch activities for account ${accountId}:`, err);
+    }
+    activitiesByAccount[accountId] = activities;
+
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 
     const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+    const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
     const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
     totalValue += acctTotal ?? 0;
     totalCash += acctCash ?? 0;
     totalBP += acctBP ?? 0;
 
+    // prefer explicit positions arrays; fallback to generic finder
+    const explicitPositions =
+      (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
+      findPositionsArray(h.data) ||
+      [];
 
-    const posArr: any[] = findPositionsArray(h.data);
-    for (const p of posArr) {
+    for (const p of explicitPositions) {
       const sym = extractDisplaySymbol(p);
-      const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
-      const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
-const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-const value = mv || qty * price;
 
+      const symbolId = pickStringStrict(
+        p?.universal_symbol?.id,
+        p?.symbol?.id,
+        p?.symbol_id,
+        p?.security_id,
+        p?.instrument_id,
+        p?.id,
+        sym
+      ) || sym;
+
+      // Quantity: support units, filled_quantity, quantity, qty, total_quantity
+      let qty = pickNumber(
+        p?.units,
+        p?.filled_quantity,
+        p?.filledQuantity,
+        p?.quantity,
+        p?.qty,
+        p?.total_quantity
+      ) ?? 0;
+
+      // Price: try several common fields
+      let price = pickNumber(
+        p?.price,
+        p?.execution_price,
+        p?.executionPrice,
+        p?.average_purchase_price,
+        p?.averagePrice,
+        p?.last_trade_price
+      );
+
+      // Market value if present
+      const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
+
+      // If price missing but market value and qty present, derive price
+      if ((price === null || price === undefined) && mv && qty) {
+        price = mv / qty;
+      }
+      price = price ?? 0;
+
+      const value = (mv != null && mv !== undefined) ? mv : (qty * price);
 
       outPositions.push({
         symbol: sym,
@@ -162,14 +202,14 @@ const value = mv || qty * price;
       buyingPower: totalBP,
     },
     positions: outPositions,
-    activitiesByAccount, 
+    activitiesByAccount,
     syncing,
   };
 
+  // Save locally and to DB via your existing helper
   await saveSnaptradeUser(userId, userSecret, summary);
   return summary;
 }
-
 async function fetchUserSecretFromDB(userId: string): Promise<string> {
   try {
     const res = await pool.query(
@@ -318,6 +358,9 @@ function findPositionsArray(root: any): any[] {
 type SecretRow = { secret: string; expiresAt: number };
 const USER_SECRETS = new Map<string, SecretRow>();
 const SECRET_TTL_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
+// Add right after the USER_SECRETS cleanup setInterval block
+const MARKET_CACHE = new Map(); // cacheKey -> { expires: number, data: any }
+const MARKET_CACHE_TTL_MS = 60 * 1000; // 60s cache for FMP responses
 
 function putSecret(userId: string, userSecret: string) {
   USER_SECRETS.set(userId, { secret: userSecret, expiresAt: Date.now() + SECRET_TTL_MS });
@@ -408,6 +451,47 @@ app.get("/status", async (_req, res) => {
 });
 
 /* -------------------------- debug helpers ------------------------- */
+
+// Add this route after your debug helpers
+app.get('/market/history/:symbol', async (req, res) => {
+  try {
+    const symbol = (req.params.symbol || '').toUpperCase();
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    const interval = String(req.query.interval || 'daily'); // '5min','15min','30min' or 'daily'
+    const apiKey = process.env.FMP_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'Missing FMP_API_KEY' });
+
+    const cacheKey = `${symbol}|${interval}|${from}|${to}`;
+    const cached = MARKET_CACHE.get(cacheKey);
+    if (cached && Date.now() < cached.expires) {
+      return res.json(cached.data);
+    }
+
+    let url;
+    if (interval !== 'daily') {
+      // intraday historical-chart endpoint
+      url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${encodeURIComponent(symbol)}?apikey=${apiKey}`;
+    } else {
+      const fromQ = from ? `&from=${encodeURIComponent(from)}` : '';
+      const toQ = to ? `&to=${encodeURIComponent(to)}` : '';
+      url = `https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(symbol)}?apikey=${apiKey}${fromQ}${toQ}`;
+    }
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '');
+      return res.status(resp.status).send(txt || `FMP error ${resp.status}`);
+    }
+    const data = await resp.json();
+
+    MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data });
+    return res.json(data);
+  } catch (err) {
+    console.error('Market history proxy error', err);
+    res.status(500).json({ error: 'server error', detail: String(err) });
+  }
+});
 
 app.get("/debug/listUsers", async (_req, res) => {
   try {
@@ -577,8 +661,6 @@ app.get("/realtime/linked", async (req, res) => {
 
 /* ------------- Real-time: summary (balances + positions) ---------- */
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
@@ -633,29 +715,67 @@ app.get("/realtime/summary", async (req, res) => {
       totalCash += acctCash ?? 0;
       totalBP += acctBP ?? 0;
 
-      const posArr: any[] = findPositionsArray(h.data);
-      for (const p of posArr) {
-        const sym = extractDisplaySymbol(p);
-        const symbolId =
-          pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
+  // explicitPositions: prefer holdings/positions arrays, fall back to finder
+const explicitPositions =
+  (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
+  findPositionsArray(h.data) ||
+  [];
 
-        const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
-        const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-        const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-        const value = mv ?? qty * price;
+for (const p of explicitPositions) {
+  const sym = extractDisplaySymbol(p);
 
-        outPositions.push({
-          symbol: sym,
-          symbolId,
-          needsMapping: UUID_RE.test(sym),
-          name: extractDisplayName(p),
-          quantity: qty,
-          price,
-          value,
-          isCrypto: isCryptoPosition(p),
-        });
-      }
+  const symbolId = pickStringStrict(
+    p?.universal_symbol?.id,
+    p?.symbol?.id,
+    p?.symbol_id,
+    p?.security_id,
+    p?.instrument_id,
+    p?.id,
+    sym
+  ) || sym;
 
+  // Quantity: support units, filled_quantity, quantity, qty, total_quantity
+  let qty = pickNumber(
+    p?.units,
+    p?.filled_quantity,
+    p?.filledQuantity,
+    p?.quantity,
+    p?.qty,
+    p?.total_quantity
+  ) ?? 0;
+
+  // Price: try several common fields
+  let price = pickNumber(
+    p?.price,
+    p?.execution_price,
+    p?.executionPrice,
+    p?.average_purchase_price,
+    p?.averagePrice,
+    p?.last_trade_price
+  );
+
+  // Market value if present
+  const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
+
+  // If price missing but market value and qty present, derive price
+  if ((price === null || price === undefined) && mv && qty) {
+    price = mv / qty;
+  }
+  price = price ?? 0;
+
+  const value = (mv != null && mv !== undefined) ? mv : (qty * price);
+
+  outPositions.push({
+    symbol: sym,
+    symbolId,
+    needsMapping: UUID_RE.test(sym),
+    name: extractDisplayName(p),
+    quantity: qty,
+    price,
+    value,
+    isCrypto: isCryptoPosition(p),
+  });
+}
       const ss: any = (h.data as any)?.sync_status || (h.data as any)?.syncStatus;
       const initDone = ss?.holdings?.initial_sync_completed ?? ss?.holdings?.initialSyncCompleted;
       if (initDone === false) syncing = true;
@@ -831,15 +951,55 @@ for (const acct of accounts) {
 
 
   // 4️⃣ Extract positions
-  const posArr: any[] = findPositionsArray(h.data);
-  for (const p of posArr) {
-    const sym = extractDisplaySymbol(p);
-    const symbolId = pickStringStrict(p?.symbol_id, p?.security_id, p?.instrument_id, p?.id, p?.symbol?.id, p?.universal_symbol?.id) || sym;
-    const qty = pickNumber(p?.units, p?.quantity, p?.qty) ?? 0;
-const price = pickNumber(p?.price, p?.price?.value) ?? 0;
-const mv = pickNumber(p?.market_value, p?.marketValue) ?? 0;
-const value = mv || qty * price;
+   // 4️⃣ Extract positions — prefer explicit positions arrays; fallback to generic finder
+  const explicitPositions =
+    (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
+    findPositionsArray(h.data) ||
+    [];
 
+  for (const p of explicitPositions) {
+    const sym = extractDisplaySymbol(p);
+
+    const symbolId = pickStringStrict(
+      p?.universal_symbol?.id,
+      p?.symbol?.id,
+      p?.symbol_id,
+      p?.security_id,
+      p?.instrument_id,
+      p?.id,
+      sym
+    ) || sym;
+
+    // Quantity: support units, filled_quantity, quantity, qty, total_quantity
+    let qty = pickNumber(
+      p?.units,
+      p?.filled_quantity,
+      p?.filledQuantity,
+      p?.quantity,
+      p?.qty,
+      p?.total_quantity
+    ) ?? 0;
+
+    // Price: try several common fields
+    let price = pickNumber(
+      p?.price,
+      p?.execution_price,
+      p?.executionPrice,
+      p?.average_purchase_price,
+      p?.averagePrice,
+      p?.last_trade_price
+    );
+
+    // Market value if present
+    const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
+
+    // If price missing but market value and qty present, derive price
+    if ((price === null || price === undefined) && mv && qty) {
+      price = mv / qty;
+    }
+    price = price ?? 0;
+
+    const value = (mv != null && mv !== undefined) ? mv : (qty * price);
 
     outPositions.push({
       symbol: sym,

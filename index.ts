@@ -453,42 +453,85 @@ app.get("/status", async (_req, res) => {
 /* -------------------------- debug helpers ------------------------- */
 
 // Add this route after your debug helpers
+// Replace your /market/history/:symbol handler with this
 app.get('/market/history/:symbol', async (req, res) => {
   try {
     const symbol = (req.params.symbol || '').toUpperCase();
-    const from = String(req.query.from || '');
-    const to = String(req.query.to || '');
-    const interval = String(req.query.interval || 'daily'); // '5min','15min','30min' or 'daily'
+    const from = String(req.query.from || ''); // "YYYY-MM-DD" optional
+    const to = String(req.query.to || '');     // "YYYY-MM-DD" optional
     const apiKey = process.env.FMP_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'Missing FMP_API_KEY' });
+    if (!apiKey) return res.status(500).json({ error: 'Missing FMP_API_KEY in env' });
 
-    const cacheKey = `${symbol}|${interval}|${from}|${to}`;
+    const cacheKey = `${symbol}|light|${from}|${to}`;
     const cached = MARKET_CACHE.get(cacheKey);
     if (cached && Date.now() < cached.expires) {
       return res.json(cached.data);
     }
 
-    let url;
-    if (interval !== 'daily') {
-      // intraday historical-chart endpoint
-      url = `https://financialmodelingprep.com/api/v3/historical-chart/${interval}/${encodeURIComponent(symbol)}?apikey=${apiKey}`;
-    } else {
-      const fromQ = from ? `&from=${encodeURIComponent(from)}` : '';
-      const toQ = to ? `&to=${encodeURIComponent(to)}` : '';
-      url = `https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(symbol)}?apikey=${apiKey}${fromQ}${toQ}`;
-    }
+    const url = `https://financialmodelingprep.com/stable/historical-price-eod/light?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`;
 
     const resp = await fetch(url);
-    if (!resp.ok) {
-      const txt = await resp.text().catch(() => '');
-      return res.status(resp.status).send(txt || `FMP error ${resp.status}`);
-    }
-    const data = await resp.json();
+    const text = await resp.text();
+    let json: any = null;
+    try { json = JSON.parse(text); } catch (e) { json = null; }
 
-    MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data });
-    return res.json(data);
+    if (!resp.ok) {
+      // If FMP returned an informative JSON error, forward it
+      if (json) return res.status(resp.status).json(json);
+      return res.status(resp.status).send(text || `FMP error ${resp.status}`);
+    }
+
+    // Detect common "legacy" error payload and return informative message
+    if (json && typeof json === 'object' && json['Error Message'] && /Legacy Endpoint/i.test(String(json['Error Message']))) {
+      return res.status(502).json({ error: 'FMP legacy endpoint not available for this key/plan', detail: json['Error Message'] });
+    }
+
+    // Normalize: FMP light endpoint returns an object like { symbol: 'AMZN', historical: [{ date: '2025-12-10', close: 123.45, ...}, ...] }
+    // But be defensive: accept array, or json.historical
+    let items: any[] = [];
+    if (Array.isArray(json)) {
+      items = json;
+    } else if (Array.isArray(json?.historical)) {
+      items = json.historical;
+    } else if (Array.isArray(json?.prices)) {
+      items = json.prices;
+    } else {
+      // Unknown shape — return raw for debugging
+      MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: { provider: 'fmp', symbol, values: [], raw: json } });
+      return res.json({ provider: 'fmp', symbol, values: [], raw: json });
+    }
+
+    // Map/normalize to { date, close } and sort ascending
+    const dayFmt = (d: string) => d; // assume already "YYYY-MM-DD" or "YYYY-MM-DD HH:mm:ss"
+    let values = items
+      .map((it: any) => {
+        const dateStr = it.date || it.datetime || it.time || it.timestamp;
+        const close = (it.close !== undefined) ? Number(it.close) : (it.adjClose !== undefined ? Number(it.adjClose) : NaN);
+        return (dateStr && !Number.isNaN(close)) ? { date: dateStr, close } : null;
+      })
+      .filter(Boolean) as { date: string; close: number }[];
+
+    // Normalize date strings to YYYY-MM-DD when possible (strip time)
+    values = values.map(v => {
+      const d = String(v.date);
+      // keep only YYYY-MM-DD portion
+      const short = d.split(' ')[0];
+      return { date: short, close: v.close };
+    });
+
+    // Sort ascending by date
+    values.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    // Filter by from/to if provided
+    if (from) values = values.filter(v => v.date >= from);
+    if (to) values = values.filter(v => v.date <= to);
+
+    const payload = { provider: 'fmp', symbol, values, raw: json };
+    MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: payload });
+
+    return res.json(payload);
   } catch (err) {
-    console.error('Market history proxy error', err);
+    console.error('Market history (FMP light) error', err);
     res.status(500).json({ error: 'server error', detail: String(err) });
   }
 });

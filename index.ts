@@ -40,6 +40,37 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+async function saveActivitiesToDB(userId: string, accountId: string, activities: any[]) {
+  if (!activities || activities.length === 0) return;
+  const rows: string[] = [];
+  const vals: any[] = [];
+  let idx = 1;
+  for (const act of activities) {
+    const symbol =
+      act?.universal_symbol?.symbol ||
+      act?.symbol?.symbol ||
+      act?.symbol ||
+      null;
+    const action = (act?.action || act?.type || act?.side || null);
+    const qty = pickNumber(act?.filled_quantity, act?.filledQuantity, act?.quantity, act?.units) ?? 0;
+    const price = pickNumber(act?.execution_price, act?.executionPrice, act?.price, act?.averagePrice) ?? null;
+    const exec = (act?.time_executed || act?.executionDate || act?.executed_at || act?.time_placed || act?.created_at || null);
+    rows.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+    vals.push(userId, accountId, symbol, action, qty, price, exec, JSON.stringify(act));
+  }
+
+  const sql = `
+    INSERT INTO snaptrade_transactions (user_id, account_id, symbol, action, quantity, price, execution_time, raw)
+    VALUES ${rows.join(",")}
+    ON CONFLICT DO NOTHING
+  `;
+  try {
+    await pool.query(sql, vals);
+    console.log(`✅ Wrote ${activities.length} activities for ${userId}/${accountId}`);
+  } catch (err) {
+    console.error("❌ Failed to write activities to DB:", errPayload(err));
+  }
+}
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   // Always try local save first
@@ -50,15 +81,20 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
     console.error("❌ Failed to save locally:", err);
   }
 
+  // Add near your DB helpers (after saveSnaptradeUser)
+
+// ----------------- helper: save activities into transactions table -----------------
+
   // DO NOT save empty summaries to DB
-  if (
-    data && typeof data === "object" &&
-    Array.isArray(data.accounts) && Array.isArray(data.positions) &&
-    data.accounts.length === 0 && data.positions.length === 0
-  ) {
-    console.warn(`⚠️ Skipped DB save for ${userId}: summary is empty accounts & positions`);
-    return; // This is the fix. Do not update DB with junk!
+ if (data && typeof data === "object") {
+  const hasAccounts = Array.isArray(data.accounts) && data.accounts.length > 0;
+  const hasPositions = Array.isArray(data.positions) && data.positions.length > 0;
+  const hasActivities = data.activitiesByAccount && Object.keys(data.activitiesByAccount || {}).some(k => Array.isArray(data.activitiesByAccount[k]) && data.activitiesByAccount[k].length > 0);
+  if (!hasAccounts && !hasPositions && !hasActivities) {
+    console.warn(`⚠️ Skipped DB save for ${userId}: no accounts, positions or activities`);
+    return;
   }
+}
 
   // Then try DB save (if not empty)
   try {
@@ -97,19 +133,28 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
 
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-    // Fetch activities (transactions/events)
-    let activities: any[] = [];
-    try {
-      const activityResp = await snaptrade.accountInformation.getAccountActivities({
-        accountId,
-        userId,
-        userSecret
-      });
-      activities = Array.isArray(activityResp.data) ? activityResp.data : [];
-    } catch (err) {
-      console.error(`Failed to fetch activities for account ${accountId}:`, err);
-    }
-    activitiesByAccount[accountId] = activities;
+    /// Replace your existing activities fetch block with this (both in fetchAndSaveUserSummary and in /snaptrade/saveUser per-account loop)
+
+let activities: any[] = [];
+try {
+  const activityResp = await snaptrade.accountInformation.getAccountActivities({
+    accountId,
+    userId,
+    userSecret
+  });
+  activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+  console.log(`Fetched activities for ${accountId}: count=${Array.isArray(activityResp.data) ? activityResp.data.length : 'non-array'}`);
+  if (!Array.isArray(activityResp.data)) {
+    console.log('activityResp.data sample:', JSON.stringify(activityResp.data).slice(0, 2000));
+  }
+} catch (err) {
+  console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
+}
+activitiesByAccount[accountId] = activities; // Persist normalized rows into transactions table await saveActivitiesToDB(userId, accountId, activities);
+
+
+// Persist normalized rows into transactions table
+await saveActivitiesToDB(userId, accountId, activities);
 
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
@@ -965,7 +1010,6 @@ app.post("/snaptrade/saveUser", async (req, res) => {
 
     // <-- NEW: collect activities per account
 const activitiesByAccount: Record<string, any[]> = {};
-
 
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";

@@ -12,6 +12,7 @@ const { Pool } = pkg;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 
+
 // Use your project folder explicitly
 const LOCAL_SAVE_DIR = path.resolve(process.cwd(), "snaptrade_local");
 // If this file is in src/ or dist/, "../" will put it at the project root
@@ -40,37 +41,73 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
-async function saveActivitiesToDB(userId: string, accountId: string, activities: any[]) {
+// Save full per-account holdings
+async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHoldings: any) {
+  if (!rawHoldings) return;
+  const sql = `
+    INSERT INTO snaptrade_account_holdings (user_id, account_id, raw)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (user_id, account_id)
+    DO UPDATE SET raw = EXCLUDED.raw, updated_at = CURRENT_TIMESTAMP
+  `;
+  try {
+    await pool.query(sql, [userId, accountId, JSON.stringify(rawHoldings)]);
+    console.log(`✅ Saved holdings for ${userId}/${accountId}`);
+  } catch (err) {
+    console.error("❌ Failed to save account holdings:", errPayload(err));
+  }
+}
+
+
+// Persist activities and upsert when brokerage_order_id exists
+async function saveActivitiesToDB(userId: string, accountId: string, activities: any[] = []) {
   if (!activities || activities.length === 0) return;
+
   const rows: string[] = [];
   const vals: any[] = [];
   let idx = 1;
+
   for (const act of activities) {
+    const brokerageId = act?.brokerage_order_id || act?.brokerageOrderId || act?.orderId || null;
     const symbol =
       act?.universal_symbol?.symbol ||
       act?.symbol?.symbol ||
-      act?.symbol ||
+      (typeof act?.symbol === 'string' ? act.symbol : null) ||
       null;
     const action = (act?.action || act?.type || act?.side || null);
     const qty = pickNumber(act?.filled_quantity, act?.filledQuantity, act?.quantity, act?.units) ?? 0;
     const price = pickNumber(act?.execution_price, act?.executionPrice, act?.price, act?.averagePrice) ?? null;
     const exec = (act?.time_executed || act?.executionDate || act?.executed_at || act?.time_placed || act?.created_at || null);
-    rows.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
-    vals.push(userId, accountId, symbol, action, qty, price, exec, JSON.stringify(act));
+
+    // 9 placeholders: brokerage_order_id, user_id, account_id, symbol, action, quantity, price, execution_time, raw
+    rows.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+    vals.push(brokerageId, userId, accountId, symbol, action, qty, price, exec, JSON.stringify(act));
   }
 
   const sql = `
-    INSERT INTO snaptrade_transactions (user_id, account_id, symbol, action, quantity, price, execution_time, raw)
+    INSERT INTO snaptrade_transactions
+      (brokerage_order_id, user_id, account_id, symbol, action, quantity, price, execution_time, raw)
     VALUES ${rows.join(",")}
-    ON CONFLICT DO NOTHING
+    ON CONFLICT ON CONSTRAINT ux_snaptrade_transactions_brokerage_order_id
+    DO UPDATE SET
+      user_id = EXCLUDED.user_id,
+      account_id = EXCLUDED.account_id,
+      symbol = EXCLUDED.symbol,
+      action = EXCLUDED.action,
+      quantity = EXCLUDED.quantity,
+      price = EXCLUDED.price,
+      execution_time = EXCLUDED.execution_time,
+      raw = EXCLUDED.raw
   `;
+
   try {
     await pool.query(sql, vals);
-    console.log(`✅ Wrote ${activities.length} activities for ${userId}/${accountId}`);
+    console.log(`✅ Wrote/updated ${activities.length} activities for ${userId}/${accountId}`);
   } catch (err) {
     console.error("❌ Failed to write activities to DB:", errPayload(err));
   }
 }
+
 // 2️⃣ Save function (right after pool)
 async function saveSnaptradeUser(userId: string, userSecret: string, data: any = {}) {
   // Always try local save first
@@ -115,13 +152,15 @@ async function saveSnaptradeUser(userId: string, userSecret: string, data: any =
 // 3️⃣ Fetch & save summary helper
 async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
   console.log("🔥 fetchAndSaveUserSummary CALLED for user:", userId);
-
   const snaptrade = mkClient();
 
   // Fetch accounts
   const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
   const accounts: any[] = accountsResp.data || [];
+
+  // Keep both activities and raw holdings by account
   const activitiesByAccount: Record<string, any[]> = {};
+  const holdingsByAccount: Record<string, any> = {};
 
   let totalValue = 0, totalCash = 0, totalBP = 0;
   const outPositions: any[] = [];
@@ -131,47 +170,50 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
     if (!accountId) continue;
 
+    // Fetch full holdings for this account
     const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-    /// Replace your existing activities fetch block with this (both in fetchAndSaveUserSummary and in /snaptrade/saveUser per-account loop)
+    // Save the full raw holdings to dedicated table and keep in-memory copy for summary
+    try {
+      await saveAccountHoldingsToDB(userId, accountId, h.data);
+    } catch (e) {
+      console.error("Failed to save account holdings:", errPayload(e));
+    }
+    holdingsByAccount[accountId] = h.data;
 
-let activities: any[] = [];
-try {
-  const activityResp = await snaptrade.accountInformation.getAccountActivities({
-    accountId,
-    userId,
-    userSecret
-  });
-  activities = Array.isArray(activityResp.data) ? activityResp.data : [];
-  console.log(`Fetched activities for ${accountId}: count=${Array.isArray(activityResp.data) ? activityResp.data.length : 'non-array'}`);
-  if (!Array.isArray(activityResp.data)) {
-    console.log('activityResp.data sample:', JSON.stringify(activityResp.data).slice(0, 2000));
-  }
-} catch (err) {
-  console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
-}
-activitiesByAccount[accountId] = activities; // Persist normalized rows into transactions table await saveActivitiesToDB(userId, accountId, activities);
+    // Fetch activities for this account
+    let activities: any[] = [];
+    try {
+      const activityResp = await snaptrade.accountInformation.getAccountActivities({ accountId, userId, userSecret });
+      activities = Array.isArray(activityResp.data) ? activityResp.data : [];
+      console.log(`Fetched activities for ${accountId}: count=${Array.isArray(activityResp.data) ? activityResp.data.length : 'non-array'}`);
+      if (!Array.isArray(activityResp.data)) {
+        console.log('activityResp.data sample:', JSON.stringify(activityResp.data).slice(0, 2000));
+      }
+    } catch (err) {
+      console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
+    }
 
+    // Keep in summary and persist to transactions table
+    activitiesByAccount[accountId] = activities;
+    await saveActivitiesToDB(userId, accountId, activities);
 
-// Persist normalized rows into transactions table
-await saveActivitiesToDB(userId, accountId, activities);
-
+    // Balances extraction (existing logic)
     const balObj: any = h.data?.balance || {};
     const balancesArr: any[] = h.data?.balances || [];
 
     const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-    const acctCash = pickNumber(balObj?.cash, (b: any) => b?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+    const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
     const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
     totalValue += acctTotal ?? 0;
     totalCash += acctCash ?? 0;
     totalBP += acctBP ?? 0;
 
-    // prefer explicit positions arrays; fallback to generic finder
+    // Positions extraction (existing logic)
     const explicitPositions =
       (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
-      findPositionsArray(h.data) ||
-      [];
+      findPositionsArray(h.data) || [];
 
     for (const p of explicitPositions) {
       const sym = extractDisplaySymbol(p);
@@ -186,7 +228,6 @@ await saveActivitiesToDB(userId, accountId, activities);
         sym
       ) || sym;
 
-      // Quantity: support units, filled_quantity, quantity, qty, total_quantity
       let qty = pickNumber(
         p?.units,
         p?.filled_quantity,
@@ -196,7 +237,6 @@ await saveActivitiesToDB(userId, accountId, activities);
         p?.total_quantity
       ) ?? 0;
 
-      // Price: try several common fields
       let price = pickNumber(
         p?.price,
         p?.execution_price,
@@ -206,10 +246,8 @@ await saveActivitiesToDB(userId, accountId, activities);
         p?.last_trade_price
       );
 
-      // Market value if present
       const mv = pickNumber(p?.market_value, p?.marketValue, p?.value);
 
-      // If price missing but market value and qty present, derive price
       if ((price === null || price === undefined) && mv && qty) {
         price = mv / qty;
       }
@@ -248,6 +286,7 @@ await saveActivitiesToDB(userId, accountId, activities);
     },
     positions: outPositions,
     activitiesByAccount,
+    holdingsByAccount,
     syncing,
   };
 
@@ -255,6 +294,7 @@ await saveActivitiesToDB(userId, accountId, activities);
   await saveSnaptradeUser(userId, userSecret, summary);
   return summary;
 }
+
 async function fetchUserSecretFromDB(userId: string): Promise<string> {
   try {
     const res = await pool.query(
@@ -763,13 +803,21 @@ app.get("/realtime/summary", async (req, res) => {
     const outPositions: any[] = [];
     let syncing = false;
     
-    const activitiesByAccount: Record<string, any[]> = {};    // <-- Declare here
+const activitiesByAccount: Record<string, any[]> = {};
+const holdingsByAccount: Record<string, any> = {};
 
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
       if (!accountId) continue;
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
+      // Save full raw holdings into dedicated table and keep for the summary
+try {
+  await saveAccountHoldingsToDB(userId, accountId, h.data);
+} catch (e) {
+  console.error("Failed to save account holdings:", errPayload(e));
+}
+holdingsByAccount[accountId] = h.data;
         let activities: any[] = [];
       try {
         const activityResp = await snaptrade.accountInformation.getAccountActivities({
@@ -879,7 +927,8 @@ for (const p of explicitPositions) {
         buyingPower: totalBP,
       },
       positions: outPositions,
-      activitiesByAccount,  
+      activitiesByAccount, 
+      holdingsByAccount, // full raw h.data per account
       syncing,
     };
 
@@ -987,29 +1036,28 @@ app.get("/trade/symbol/:ticker", async (req, res) => {
 });
 
 /* ---------------------- Save Snaptrade User ---------------------- */
+// Replace the existing POST /snaptrade/saveUser handler with this block
 app.post("/snaptrade/saveUser", async (req, res) => {
   try {
     const { userId, userSecret } = req.body;
-
     if (!userId || !userSecret) {
       return res.status(400).json({ error: "Missing userId or userSecret" });
     }
 
     const snaptrade = mkClient();
-
     console.log("Fetching accounts for", { userId /* do not log secret in prod */ });
 
     const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
     console.log("Accounts response:", JSON.stringify(accountsResp.data || [], null, 2));
-
     const accounts = accountsResp.data || [];
 
     let totalValue = 0, totalCash = 0, totalBP = 0;
-    const outPositions = [];
+    const outPositions: any[] = [];
     let syncing = false;
 
-    // <-- NEW: collect activities per account
-const activitiesByAccount: Record<string, any[]> = {};
+    // Collect activities and holdings per account
+    const activitiesByAccount: Record<string, any[]> = {};
+    const holdingsByAccount: Record<string, any> = {};
 
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
@@ -1018,14 +1066,18 @@ const activitiesByAccount: Record<string, any[]> = {};
       // Get holdings for each account
       const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
-      // <-- NEW: fetch activities for this account (transactions / events)
-      let activities = [];
+      // Save full raw holdings into dedicated table and keep for summary
       try {
-        const activityResp = await snaptrade.accountInformation.getAccountActivities({
-          accountId,
-          userId,
-          userSecret
-        });
+        await saveAccountHoldingsToDB(userId, accountId, h.data);
+      } catch (e) {
+        console.error("Failed to save account holdings:", errPayload(e));
+      }
+      holdingsByAccount[accountId] = h.data;
+
+      // Fetch activities for this account (transactions / events)
+      let activities: any[] = [];
+      try {
+        const activityResp = await snaptrade.accountInformation.getAccountActivities({ accountId, userId, userSecret });
         activities = Array.isArray(activityResp.data) ? activityResp.data : [];
         if (activities.length) {
           console.log(`Fetched ${activities.length} activities for account ${accountId}`);
@@ -1033,19 +1085,17 @@ const activitiesByAccount: Record<string, any[]> = {};
       } catch (err) {
         console.error(`Failed to fetch activities for account ${accountId}:`, errPayload(err));
       }
+
+      // Keep in summary and persist to transactions table
       activitiesByAccount[accountId] = activities;
+      await saveActivitiesToDB(userId, accountId, activities);
 
       // Extract balances
       const balObj = h.data?.balance || {};
       const balancesArr = h.data?.balances || [];
       const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-      const acctCash =
-        pickNumber(balObj?.cash, balObj?.cash?.amount) ||
-        pickNumber(balancesArr.find(b => b?.cash != null) || {});
-      const acctBP =
-        pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) ||
-        pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) ||
-        acctCash;
+      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+      const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
       totalValue += acctTotal ?? 0;
       totalCash += acctCash ?? 0;
@@ -1054,8 +1104,7 @@ const activitiesByAccount: Record<string, any[]> = {};
       // Extract positions (existing logic)
       const explicitPositions =
         (h.data && (h.data.positions || h.data.holdings?.positions || h.data.account?.positions || h.data.account?.holdings?.positions)) ||
-        findPositionsArray(h.data) ||
-        [];
+        findPositionsArray(h.data) || [];
 
       for (const p of explicitPositions) {
         const sym = extractDisplaySymbol(p);
@@ -1114,7 +1163,7 @@ const activitiesByAccount: Record<string, any[]> = {};
       if (initDone === false) syncing = true;
     }
 
-    // Build and save summary INCLUDING activitiesByAccount
+    // Build and save summary INCLUDING activitiesByAccount and holdingsByAccount
     const summary = {
       accounts: accounts.map((a, i) => ({
         id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
@@ -1128,12 +1177,12 @@ const activitiesByAccount: Record<string, any[]> = {};
         buyingPower: totalBP,
       },
       positions: outPositions,
-      activitiesByAccount,   // <- now included and will be saved to DB
+      activitiesByAccount,
+      holdingsByAccount,
       syncing,
     };
 
     await saveSnaptradeUser(userId, userSecret, summary);
-
     res.json({ success: true, saved: summary });
   } catch (err) {
     console.error("❌ Failed to save user:", err);

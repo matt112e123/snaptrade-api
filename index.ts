@@ -273,11 +273,14 @@ const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecre
 
   const summary = {
     accounts: accounts.map((a: any, i: number) => ({
-      id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-      name: a.name || a.accountName || "Account",
-      currency: a.currency || "USD",
-      type: a.type || a.accountType || "BROKERAGE",
-    })),
+  id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+  name: a.name || a.accountName || "Account",
+  currency: a.currency || "USD",
+  type: a.type || a.accountType || "BROKERAGE",
+  // include broker-provided number and meta (if present) so frontend can show masked broker account number
+  number: a.number ?? null,
+  meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
+})),
     totals: {
       equity: Math.max(0, totalValue - totalCash),
       cash: totalCash,
@@ -990,11 +993,14 @@ for (const p of explicitPositions) {
     // 💡 Build summary object FIRST!
     const summary = {
       accounts: accounts.map((a: any, i: number) => ({
-        id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-        name: a.name || a.accountName || "Account",
-        currency: a.currency || "USD",
-        type: a.type || a.accountType || "BROKERAGE",
-      })),
+  id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+  name: a.name || a.accountName || "Account",
+  currency: a.currency || "USD",
+  type: a.type || a.accountType || "BROKERAGE",
+  // include broker-provided number and meta (if present) so frontend can show masked broker account number
+  number: a.number ?? null,
+  meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
+})),
       totals: {
         equity: Math.max(0, totalValue - totalCash),
         cash: totalCash,
@@ -1502,23 +1508,27 @@ app.post("/snaptrade/saveUser", async (req, res) => {
     }
 
     // Build and save summary INCLUDING activitiesByAccount and holdingsByAccount
-    const summary = {
-      accounts: accounts.map((a, i) => ({
-        id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-        name: a.name || a.accountName || "Account",
-        currency: a.currency || "USD",
-        type: a.type || a.accountType || "BROKERAGE",
-      })),
-      totals: {
-        equity: Math.max(0, totalValue - totalCash),
-        cash: totalCash,
-        buyingPower: totalBP,
-      },
-      positions: outPositions,
-      activitiesByAccount,
-      holdingsByAccount,
-      syncing,
-    };
+   // Replace the accounts mapping inside the POST /snaptrade/saveUser handler with this:
+const summary = {
+  accounts: accounts.map((a: any, i: number) => ({
+    id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
+    name: a.name || a.accountName || "Account",
+    currency: a.currency || "USD",
+    type: a.type || a.accountType || "BROKERAGE",
+    // include broker-provided number and meta (if present) so frontend can show masked broker account number
+    number: a.number ?? null,
+    meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
+  })),
+  totals: {
+    equity: Math.max(0, totalValue - totalCash),
+    cash: totalCash,
+    buyingPower: totalBP,
+  },
+  positions: outPositions,
+  activitiesByAccount,
+  holdingsByAccount,
+  syncing,
+};
 
     await saveSnaptradeUser(userId, userSecret, summary);
     res.json({ success: true, saved: summary });

@@ -1177,33 +1177,56 @@ if (matchedAuth) {
   );
 }
 
-    if (matchedAuth) {
-      const perms = Array.isArray(matchedAuth?.permissions) ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase()) : [];
-      const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
-      if (tradingFlag === true || perms.includes("trade") || perms.includes("trading") || perms.includes("orders")) {
-        return { ok: true };
-      }
+    // === replace the existing "if (matchedAuth) { ... }" detection block with this ===
+if (matchedAuth) {
+  // existing perms check
+  const perms = Array.isArray(matchedAuth?.permissions)
+    ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase())
+    : [];
 
-      // Try to generate reconnect reauth URL to upgrade to trading
-      const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
-      if (reconnectId) {
-        try {
-          const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-            userId,
-            userSecret,
-            immediateRedirect: false,
-            connectionType: "trade",
-            reconnect: reconnectId,
-          });
-          const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-          if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-        } catch (e: any) {
-          console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
-        }
-      }
+  // detect explicit flags many providers may use
+  const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
 
-      return { ok: false, reason: "trade_not_enabled" };
+  // NEW: detect explicit "type" field on the matched authorization (SnapTrade sometimes sets type: "trade")
+  const authType = (typeof matchedAuth?.type === "string" ? matchedAuth.type.toLowerCase() : undefined);
+
+  // NEW: detect brokerage-level authorization_types array (some SDK payloads include this)
+  const brokerAllows = Array.isArray(matchedAuth?.brokerage?.authorization_types)
+    ? matchedAuth.brokerage.authorization_types.map((t: any) => String(t.type).toLowerCase())
+    : [];
+
+  if (
+      tradingFlag === true ||
+      perms.includes("trade") ||
+      perms.includes("trading") ||
+      perms.includes("orders") ||
+      authType === "trade" ||
+      brokerAllows.includes("trade") ||
+      matchedAuth?.brokerage?.allows_trading === true
+  ) {
+    return { ok: true };
+  }
+
+  // Try to generate reconnect reauth URL to upgrade to trading
+  const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
+  if (reconnectId) {
+    try {
+      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+        userId,
+        userSecret,
+        immediateRedirect: false,
+        connectionType: "trade",
+        reconnect: reconnectId,
+      });
+      const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+    } catch (e: any) {
+      console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
     }
+  }
+
+  return { ok: false, reason: "trade_not_enabled" };
+}
 
     // Inspect account objects for trading flags
     try {

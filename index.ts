@@ -484,6 +484,7 @@ app.get("/debug/ping", (_req, res) => {
   res.json({ ok: true, now: new Date().toISOString() });
 });
 
+
 /* ------------------------------- CORS ------------------------------ */
 
 const defaultOrigins = [
@@ -655,6 +656,51 @@ app.get("/debug/register", async (_req, res) => {
   }
 });
 
+// Debug route: return raw authorizations + accounts for inspection
+// Debug route: return raw authorizations + accounts for inspection
+app.get("/debug/auths", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "");
+    const secretFromCache = getSecret(userId);
+    const secretFromDB = await fetchUserSecretFromDB(userId);
+    const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
+
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: "Missing userId or userSecret. Try ?userId=dev-... and ensure secret cached or pass &userSecret=<SECRET> (do not paste the secret publicly)." });
+    }
+
+    const snaptrade = mkClient();
+
+    // explicit typing to satisfy TS/noImplicitAny
+    let auths: any[] = [];
+    try {
+      const r: any = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+      auths = r?.data || [];
+    } catch (e) {
+      console.warn("debug/auths: listBrokerageAuthorizations failed:", errPayload(e));
+      auths = [];
+    }
+
+    let accounts: any[] = [];
+    try {
+      const a: any = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+      accounts = a?.data || [];
+    } catch (e) {
+      console.warn("debug/auths: listUserAccounts failed:", errPayload(e));
+      accounts = [];
+    }
+
+    return res.json({
+      userId,
+      authsCount: Array.isArray(auths) ? auths.length : 0,
+      accountsCount: Array.isArray(accounts) ? accounts.length : 0,
+      auths,
+      accounts
+    });
+  } catch (err) {
+    res.status(500).json(errPayload(err));
+  }
+});
 /* ------------------------- SnapTrade connect ---------------------- */
 /**
  * NAVIGATE here from the browser (not fetch/XHR):
@@ -1118,6 +1164,18 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
         }
       }
     }
+
+    // inside ensureTradingEnabled, after matchedAuth is assigned:
+if (matchedAuth) {
+  console.log("ensureTradingEnabled: matchedAuth summary =>",
+    {
+      id: matchedAuth.id || matchedAuth.connection_id || matchedAuth.connectionId,
+      broker: matchedAuth.broker || matchedAuth.broker_slug || matchedAuth.provider,
+      permissions: matchedAuth.permissions,
+      trading_enabled: matchedAuth.trading_enabled ?? matchedAuth.supports_trading ?? matchedAuth.allow_trading ?? matchedAuth.canTrade
+    }
+  );
+}
 
     if (matchedAuth) {
       const perms = Array.isArray(matchedAuth?.permissions) ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase()) : [];

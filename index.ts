@@ -58,35 +58,6 @@ async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHol
   }
 }
 
-// Centralized fetchHoldings helper (falls back to cached DB on 401)
-async function fetchHoldings(snaptrade: any, userId: string, userSecret: string, accountId: string) {
-  let h: any = { data: {} };
-  try {
-    const hResp = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
-    h = hResp;
-  } catch (e: any) {
-    const ep = errPayload(e);
-    console.warn(`getUserHoldings failed for ${accountId}:`, ep);
-    if (ep?.status === 401) {
-      // DB fallback on 401
-      try {
-        const r = await pool.query('SELECT raw FROM snaptrade_account_holdings WHERE user_id=$1 AND account_id=$2 LIMIT 1', [userId, accountId]);
-        if (r.rows[0]?.raw) {
-          h = { data: JSON.parse(r.rows[0].raw) };
-          console.log(`Used cached holdings for ${accountId}`);
-        } else {
-          h = { data: {} };
-        }
-      } catch (dbErr) {
-        console.warn("DB fallback failed for holdings:", dbErr);
-        h = { data: {} };
-      }
-    } else {
-      h = { data: {} };
-    }
-  }
-  return h;
-}
 
 // Persist activities and upsert when brokerage_order_id exists
 async function saveActivitiesToDB(userId: string, accountId: string, activities: any[] = []) {
@@ -200,8 +171,7 @@ async function fetchAndSaveUserSummary(userId: string, userSecret: string) {
     if (!accountId) continue;
 
     // Fetch full holdings for this account
-const h = await fetchHoldings(snaptrade, userId, userSecret, accountId);
-
+const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
     // Save the full raw holdings to dedicated table and keep in-memory copy for summary
     try {
       await saveAccountHoldingsToDB(userId, accountId, h.data);
@@ -367,20 +337,11 @@ function lanIPs(): string[] {
 }
 
 function errPayload(err: any) {
-  // Try to extract as much useful info as possible from Axios / SDK errors
-  const status = err?.response?.status ?? err?.status;
-  const headers = err?.response?.headers ?? err?.headers;
-  const data = err?.response?.data ?? err?.response?.body ?? err?.data ?? undefined;
+  const status = err?.response?.status;
+  const headers = err?.response?.headers;
+  const data = err?.response?.data;
   const message = err?.message || String(err);
-
-  // Log full, safe info for debugging
-  console.error("❌ UPSTREAM/ROUTE ERROR:", {
-    status,
-    message,
-    data: (typeof data === "object" ? data : String(data)),
-    stack: err?.stack || null
-  });
-
+  console.error("❌ UPSTREAM/ROUTE ERROR:", { status, message, data });
   return { status, headers, data, message };
 }
 
@@ -787,21 +748,15 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
     // reconnect is optional - used to re-authorize an existing connection for trading
     const reconnect = typeof req.query.reconnect === "string" && req.query.reconnect.trim() ? String(req.query.reconnect).trim() : undefined;
 
-    // TEMP DEBUG: request login with immediateRedirect:false and return upstream response
-const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-  userId,
-  userSecret,
-  immediateRedirect: false,     // DEBUG: get login response body instead of redirecting
-  customRedirect: requested,
-  connectionType: connectionType as any,
-  ...(reconnect ? { reconnect } : {}),
-});
-
-const loginData: any = loginResp?.data ?? null;
-return res.status(200).json({
-  note: "TEMP DEBUG: returning SnapTrade login response. Revert this after debugging.",
-  debugLoginResp: loginData
-});
+    const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+      userId,
+      userSecret,
+      immediateRedirect: true,
+      customRedirect: requested,
+      // cast to satisfy the SDK type (enum)
+      connectionType: connectionType as any,
+      ...(reconnect ? { reconnect } : {}),
+    });
 
 
     const data: any = loginResp?.data;
@@ -882,7 +837,8 @@ const holdingsByAccount: Record<string, any> = {};
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || acct.guid || "";
       if (!accountId) continue;
-const h = await fetchHoldings(snaptrade, userId, userSecret, accountId);
+      const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
+
       // Save full raw holdings into dedicated table and keep for the summary
 try {
   await saveAccountHoldingsToDB(userId, accountId, h.data);
@@ -1115,8 +1071,7 @@ app.get("/debug/holdings", async (req, res) => {
     for (const acct of accounts) {
       const accountId = acct.id || acct.accountId || acct.number || "";
       if (!accountId) continue;
-const h = await fetchHoldings(snaptrade, userId, userSecret, accountId);
-
+      const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
       const pos = findPositionsArray(h.data);
       out[accountId] = { keys: Object.keys(h.data || {}), sample: pos.slice(0, 3), raw: h.data };
     }
@@ -1233,7 +1188,6 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
     return { ok: false, reason: "error_checking" };
   }
 }
-
 /* ----------------------- Trade: Place Order (New) ----------------------- */
 /**
  * Sample request payload:
@@ -1344,8 +1298,7 @@ app.post("/snaptrade/saveUser", async (req, res) => {
       if (!accountId) continue;
 
       // Get holdings for each account
-const h = await fetchHoldings(snaptrade, userId, userSecret, accountId);
-
+      const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecret, accountId });
 
       // Save full raw holdings into dedicated table and keep for summary
       try {
@@ -1375,10 +1328,8 @@ const h = await fetchHoldings(snaptrade, userId, userSecret, accountId);
       const balObj = h.data?.balance || {};
       const balancesArr = h.data?.balances || [];
       const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) ||pickNumber(balancesArr.find((b: any) => b?.cash != null) || {})
-
-      const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {})
- || acctCash;
+      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+      const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
       totalValue += acctTotal ?? 0;
       totalCash += acctCash ?? 0;

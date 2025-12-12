@@ -1136,8 +1136,10 @@ app.get("/debug/holdings", async (req, res) => {
  * Returns: { ok: boolean, reason?: string, reauthUrl?: string }
  */
 // Replace existing ensureTradingEnabled(...) with this implementation
+// Replace the existing ensureTradingEnabled function with this full implementation
 async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: string, accountId?: string) {
   try {
+    // 1) Try to list authorizations
     let authsResp: any = null;
     try {
       authsResp = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
@@ -1145,8 +1147,9 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       console.warn("Could not listBrokerageAuthorizations:", (e && e.message) || e);
       authsResp = null;
     }
-    const auths = authsResp?.data || [];
+    const auths: any[] = authsResp?.data || [];
 
+    // 2) Try to find a matched auth that references this account (various shapes)
     let matchedAuth: any = null;
     if (Array.isArray(auths) && auths.length && accountId) {
       for (const a of auths) {
@@ -1165,70 +1168,90 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       }
     }
 
-    // inside ensureTradingEnabled, after matchedAuth is assigned:
-if (matchedAuth) {
-  console.log("ensureTradingEnabled: matchedAuth summary =>",
-    {
-      id: matchedAuth.id || matchedAuth.connection_id || matchedAuth.connectionId,
-      broker: matchedAuth.broker || matchedAuth.broker_slug || matchedAuth.provider,
-      permissions: matchedAuth.permissions,
-      trading_enabled: matchedAuth.trading_enabled ?? matchedAuth.supports_trading ?? matchedAuth.allow_trading ?? matchedAuth.canTrade
+    // Fallback: if we didn't find matchedAuth above, try matching the account's brokerage_authorization -> auth id
+    if (!matchedAuth && accountId) {
+      try {
+        const accResp: any = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+        const accs: any[] = accResp?.data || [];
+        const foundAcc = accs.find((x: any) => {
+          const aid = x?.id || x?.accountId || x?.number || x?.guid;
+          return aid === accountId;
+        });
+        if (foundAcc && foundAcc.brokerage_authorization) {
+          const authId = foundAcc.brokerage_authorization;
+          matchedAuth = (Array.isArray(auths) ? auths.find((a: any) =>
+            a?.id === authId || a?.connection_id === authId || a?.connectionId === authId
+          ) : null) || null;
+          if (matchedAuth) {
+            console.log("ensureTradingEnabled: matchedAuth found via account.brokerage_authorization ->", { authId });
+          }
+        }
+      } catch (e: any) {
+        console.warn("ensureTradingEnabled: fallback listUserAccounts failed:", (e && e.message) || e);
+      }
     }
-  );
-}
 
-    // === replace the existing "if (matchedAuth) { ... }" detection block with this ===
-if (matchedAuth) {
-  // existing perms check
-  const perms = Array.isArray(matchedAuth?.permissions)
-    ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase())
-    : [];
-
-  // detect explicit flags many providers may use
-  const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
-
-  // NEW: detect explicit "type" field on the matched authorization (SnapTrade sometimes sets type: "trade")
-  const authType = (typeof matchedAuth?.type === "string" ? matchedAuth.type.toLowerCase() : undefined);
-
-  // NEW: detect brokerage-level authorization_types array (some SDK payloads include this)
-  const brokerAllows = Array.isArray(matchedAuth?.brokerage?.authorization_types)
-    ? matchedAuth.brokerage.authorization_types.map((t: any) => String(t.type).toLowerCase())
-    : [];
-
-  if (
-      tradingFlag === true ||
-      perms.includes("trade") ||
-      perms.includes("trading") ||
-      perms.includes("orders") ||
-      authType === "trade" ||
-      brokerAllows.includes("trade") ||
-      matchedAuth?.brokerage?.allows_trading === true
-  ) {
-    return { ok: true };
-  }
-
-  // Try to generate reconnect reauth URL to upgrade to trading
-  const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
-  if (reconnectId) {
-    try {
-      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-        userId,
-        userSecret,
-        immediateRedirect: false,
-        connectionType: "trade",
-        reconnect: reconnectId,
-      });
-      const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-    } catch (e: any) {
-      console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
+    // Short summary log if we have a match
+    if (matchedAuth) {
+      console.log("ensureTradingEnabled: matchedAuth summary =>",
+        {
+          id: matchedAuth.id || matchedAuth.connection_id || matchedAuth.connectionId,
+          broker: matchedAuth.broker || matchedAuth.broker_slug || matchedAuth.provider || matchedAuth?.brokerage?.slug,
+          permissions: matchedAuth.permissions,
+          trading_enabled: matchedAuth.trading_enabled ?? matchedAuth.supports_trading ?? matchedAuth.allow_trading ?? matchedAuth.canTrade,
+          type: matchedAuth.type
+        }
+      );
     }
-  }
 
-  return { ok: false, reason: "trade_not_enabled" };
-}
+    // If matchedAuth exists, robustly detect trading capability from multiple fields/shapes
+    if (matchedAuth) {
+      const perms = Array.isArray(matchedAuth?.permissions)
+        ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase())
+        : [];
 
-    // Inspect account objects for trading flags
+      const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
+
+      const authType = (typeof matchedAuth?.type === "string" ? matchedAuth.type.toLowerCase() : undefined);
+
+      const brokerAllows = Array.isArray(matchedAuth?.brokerage?.authorization_types)
+        ? matchedAuth.brokerage.authorization_types.map((t: any) => String(t.type).toLowerCase())
+        : [];
+
+      if (
+        tradingFlag === true ||
+        perms.includes("trade") ||
+        perms.includes("trading") ||
+        perms.includes("orders") ||
+        authType === "trade" ||
+        brokerAllows.includes("trade") ||
+        matchedAuth?.brokerage?.allows_trading === true
+      ) {
+        return { ok: true };
+      }
+
+      // If we have an auth id but it's not marked as trading, offer reconnect link
+      const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
+      if (reconnectId) {
+        try {
+          const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+            userId,
+            userSecret,
+            immediateRedirect: false,
+            connectionType: "trade",
+            reconnect: reconnectId,
+          });
+          const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+          if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+        } catch (e: any) {
+          console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
+        }
+      }
+
+      return { ok: false, reason: "trade_not_enabled" };
+    }
+
+    // If no matchedAuth, inspect account objects for trading flags
     try {
       const aResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
       const accounts = aResp?.data || [];

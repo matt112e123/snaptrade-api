@@ -271,17 +271,35 @@ const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecre
     if (initDone === false) syncing = true;
   }
 
-  const summary = {
-    accounts: accounts.map((a: any, i: number) => ({
-  id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-  name: a.name || a.accountName || "Account",
-  currency: a.currency || "USD",
-  type: a.type || a.accountType || "BROKERAGE",
-  // include broker-provided number and meta (if present) so frontend can show masked broker account number
-  number: a.number ?? null,
-  meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
-})),
-    totals: {
+const summary = {
+  accounts: accounts.map((a: any, i: number) => {
+    const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
+    const h = holdingsByAccount?.[accountId];
+    const balObj = h?.balance || {};
+    const balancesArr = h?.balances || [];
+
+    const cash =
+      pickNumber(balObj.cash, balObj.cash?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
+      null;
+
+    const buyingPower =
+      pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {}) ??
+      null;
+
+    return {
+      id: String(accountId),
+      name: a.name || a.accountName || "Account",
+      currency: a.currency || "USD",
+      type: a.type || a.accountType || "BROKERAGE",
+      number: a.number ?? null,
+      meta: a.meta ?? a.raw_meta ?? a.metaData ?? null,
+      cash,
+      buyingPower
+    }
+  }),
+  totals: {
       equity: Math.max(0, totalValue - totalCash),
       cash: totalCash,
       buyingPower: totalBP,
@@ -991,17 +1009,35 @@ for (const p of explicitPositions) {
     
     
     // 💡 Build summary object FIRST!
-    const summary = {
-      accounts: accounts.map((a: any, i: number) => ({
-  id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-  name: a.name || a.accountName || "Account",
-  currency: a.currency || "USD",
-  type: a.type || a.accountType || "BROKERAGE",
-  // include broker-provided number and meta (if present) so frontend can show masked broker account number
-  number: a.number ?? null,
-  meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
-})),
-      totals: {
+const summary = {
+  accounts: accounts.map((a: any, i: number) => {
+    const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
+    const h = holdingsByAccount?.[accountId];
+    const balObj = h?.balance || {};
+    const balancesArr = h?.balances || [];
+
+    const cash =
+      pickNumber(balObj.cash, balObj.cash?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
+      null;
+
+    const buyingPower =
+      pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
+      cash;
+
+    return {
+      id: String(accountId),
+      name: a.name || a.accountName || "Account",
+      currency: a.currency || "USD",
+      type: a.type || a.accountType || "BROKERAGE",
+      number: a.number ?? null,
+      meta: a.meta ?? a.raw_meta ?? a.metaData ?? null,
+      cash,
+      buyingPower
+    }
+  }),
+  totals: {
         equity: Math.max(0, totalValue - totalCash),
         cash: totalCash,
         buyingPower: totalBP,
@@ -1440,7 +1476,7 @@ app.post("/snaptrade/saveUser", async (req, res) => {
       const balObj = h.data?.balance || {};
       const balancesArr = h.data?.balances || [];
       const acctTotal = pickNumber(balObj?.total, balObj?.total?.amount);
-      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find(b => b?.cash != null) || {});
+      const acctCash = pickNumber(balObj?.cash, balObj?.cash?.amount) || pickNumber(balancesArr.find((b: any) => b?.cash != null) || {});
       const acctBP = pickNumber(balObj?.buyingPower, balObj?.buying_power, balObj?.buying_power?.amount) || pickNumber(balancesArr.find(b => b?.buying_power != null) || {}) || acctCash;
 
       totalValue += acctTotal ?? 0;
@@ -1512,15 +1548,34 @@ app.post("/snaptrade/saveUser", async (req, res) => {
     // Build and save summary INCLUDING activitiesByAccount and holdingsByAccount
    // Replace the accounts mapping inside the POST /snaptrade/saveUser handler with this:
 const summary = {
-  accounts: accounts.map((a: any, i: number) => ({
-    id: String(a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`),
-    name: a.name || a.accountName || "Account",
-    currency: a.currency || "USD",
-    type: a.type || a.accountType || "BROKERAGE",
-    // include broker-provided number and meta (if present) so frontend can show masked broker account number
-    number: a.number ?? null,
-    meta: a.meta ?? a.raw_meta ?? a.metaData ?? null
-  })),
+  accounts: accounts.map((a: any, i: number) => {
+    const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
+    const h = holdingsByAccount?.[accountId];
+    const balObj = h?.balance || {};
+    const balancesArr = h?.balances || [];
+
+    const cash =
+      pickNumber(balObj.cash, balObj.cash?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
+      null;
+
+    const buyingPower =
+      pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {})
+ ??
+      cash;
+
+    return {
+      id: String(accountId),
+      name: a.name || a.accountName || "Account",
+      currency: a.currency || "USD",
+      type: a.type || a.accountType || "BROKERAGE",
+      number: a.number ?? null,
+      meta: a.meta ?? a.raw_meta ?? a.metaData ?? null,
+      cash,
+      buyingPower
+    }
+  }),
   totals: {
     equity: Math.max(0, totalValue - totalCash),
     cash: totalCash,

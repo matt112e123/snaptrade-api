@@ -1266,6 +1266,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
         perms.includes("trade") ||
         perms.includes("trading") ||
         perms.includes("orders") ||
+        authType === "trade" || 
         authType === "trade" ||
         brokerAllows.includes("trade") ||
         matchedAuth?.brokerage?.allows_trading === true

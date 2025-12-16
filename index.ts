@@ -1108,6 +1108,7 @@ app.get("/realtime/trading", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
+
 /* -------------------------- debug: holdings ------------------------ */
 
 app.get("/debug/holdings", async (req, res) => {
@@ -1313,6 +1314,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
  * }
  */
 app.post("/trade/placeOrder", async (req, res) => {
+console.log("PlaceOrder received:", req.body); // <-- Add this!
   try {
     const {
       userId,

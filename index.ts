@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
-import { v4 as uuidv4 } from "uuid";
 import os from "os";
 import cors from "cors";
 import fs from "fs";
@@ -1374,10 +1373,12 @@ async function getAccountBroker(
   return acct?.broker || acct?.broker_slug || acct?.provider || '';
 }
 
+import { v4 as uuidv4 } from "uuid"; // npm install uuid
+
 app.post("/trade/placeOrder", async (req, res) => {
-    const tradeId = uuidv4();
 console.log("PlaceOrder received:", req.body); // <-- Add this!
 
+  const tradeId = uuidv4();
 
   try {
     const {
@@ -1442,7 +1443,7 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
       userId,
       userSecret,
       accountId, // ✅ keep camelCase here for runtime
-      tradeId, // Only here!
+        tradeId,   // <--- add this if required by SDK
       body: {
         action,
         order_type: orderType,

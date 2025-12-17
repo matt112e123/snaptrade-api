@@ -1478,8 +1478,13 @@ res.json(order.data);
 
     res.json(order.data);
   } catch (err: any) {
-    res.status(500).json(errPayload(err));
-  }
+  // Enhanced error logging and error return
+  console.error("ORDER ERROR:", err?.response?.data || err?.data || err.message || err);
+  res.status(500).json({
+    error: "Order failed",
+    snaptradeDetail: err?.response?.data || err?.data || err.message || String(err)
+  });
+}
 });
 
 

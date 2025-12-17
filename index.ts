@@ -5,6 +5,7 @@ import os from "os";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import { v4 as uuidv4 } from "uuid";
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -1374,7 +1375,10 @@ async function getAccountBroker(
 }
 
 app.post("/trade/placeOrder", async (req, res) => {
+    const tradeId = uuidv4();
 console.log("PlaceOrder received:", req.body); // <-- Add this!
+
+
   try {
     const {
       userId,
@@ -1438,6 +1442,7 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
       userId,
       userSecret,
       accountId, // ✅ keep camelCase here for runtime
+      tradeId, // Only here!
       body: {
         action,
         order_type: orderType,

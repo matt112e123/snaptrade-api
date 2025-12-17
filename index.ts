@@ -854,10 +854,10 @@ app.get("/connect/redirect", handleConnect); // alias for your frontend button
 app.get("/realtime/linked", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
-let userSecret = String(req.query.userSecret || getSecret(userId) || "");
+let userSecret = await fetchUserSecretFromDB(userId);
 if (!userSecret) {
-  userSecret = await fetchUserSecretFromDB(userId);
-}    const snaptrade = mkClient();
+  return res.status(400).json({ linked: false, error: "Missing userId or userSecret" });
+}   const snaptrade = mkClient();
 
     console.log(`[LINKED] called`, { userId, userSecret });
 
@@ -893,10 +893,10 @@ if (!userSecret) {
 app.get("/realtime/summary", async (req, res) => {
   try {
     const userId = (req.query.userId ?? "").toString();
-    const secretFromCache = getSecret(userId);
-    const secretFromDB = await fetchUserSecretFromDB(userId);
-    const userSecret = (req.query.userSecret as string) || secretFromCache || secretFromDB || "";
-
+   let userSecret = await fetchUserSecretFromDB(userId);
+if (!userSecret) {
+  return res.status(400).json({ error: "Missing userId or userSecret" });
+}
     if (!userId || !userSecret || userId === "null" || userSecret === "null") {
       return res.status(400).json({ error: "Missing userId or userSecret" });
     }

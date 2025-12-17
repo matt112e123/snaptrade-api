@@ -820,7 +820,7 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
       userSecret,
       immediateRedirect: true,
       customRedirect: requested,
-      connectionType: "trade", // <<<< THIS IS THE IMPORTANT LINE
+  connectionType: "read", // <<<< THIS will show ALL brokers by default
       ...(reconnect ? { reconnect } : {}),
     });
 

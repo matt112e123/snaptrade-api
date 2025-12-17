@@ -1438,20 +1438,31 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
 
 
     // Place order
-    const order = await (snaptrade.trading as any).placeOrder({
-      userId,
-      userSecret,
-      accountId, // ✅ keep camelCase here for runtime
-        tradeId,   // <--- add this if required by SDK
-      body: {
-        action,
-        order_type: orderType,
-        time_in_force: "Day",
-        units: quantity,
-        symbol,
-        price: limitPrice,
-      },
-    });
+ let params: any = {
+  userId,
+  userSecret,
+  tradeId,
+  accountId,
+  action,
+  order_type: orderType,      // or 'orderType' if that's what your SDK expects
+  time_in_force: "Day",
+  units: Number(quantity),
+  symbol
+};
+
+if (
+  orderType.toUpperCase() === "LIMIT" &&
+  limitPrice !== undefined &&
+  limitPrice !== null
+) {
+  params.price = Number(limitPrice);
+}
+
+const order = await snaptrade.trading.placeOrder(params);
+res.json(order.data);
+// --- END of Equity order block --- 
+
+res.json(order.data);
 
     res.json(order.data);
   } catch (err: any) {

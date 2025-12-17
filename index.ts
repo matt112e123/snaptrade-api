@@ -856,40 +856,22 @@ app.get("/realtime/linked", async (req, res) => {
     const userId = String(req.query.userId || "");
     const userSecret = String(req.query.userSecret || getSecret(userId) || "");
     const snaptrade = mkClient();
+    console.log({ userId, userSecret });
     let linked = false;
-
-    // Step 1: Check if authorized
-    let auths = [];
     try {
       const r = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
-      auths = r.data || [];
-      linked = auths.length > 0;
-    } catch {}
-
-    // Step 2: Check accounts and at least one nonzero balance/positions
-   if (linked) {
-  let accounts = [];
-  try {
-    const a = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-    accounts = a.data || [];
-    linked = accounts.some(acct => {
-      // Defensive: check various shapes
-      const bal: any = acct.balance || {};
-      const balancesArr: any[] = acct.balances || [];
-      // Look for any cash-like field in balances array
-      const cashLike = balancesArr.find(
-        b => b && (b.type?.toLowerCase() === "cash" || String(b.label || "").toLowerCase().includes("cash"))
-      );
-      const cashAmt = (cashLike?.amount !== undefined) ? Number(cashLike.amount) : 0;
-
-      const hasFunds = (bal.total && Number(bal.total) > 0) || cashAmt > 0;
-      const hasPositions = Array.isArray(acct.positions) && acct.positions.length > 0;
-      return hasFunds || hasPositions;
-    });
-  } catch {}
-}
+      console.log("Auths:", JSON.stringify(r.data,null,2));
+      linked = (r.data?.length ?? 0) > 0;
+    } catch (e: any) { console.error("Error in listBrokerageAuthorizations", e); }
+    if (!linked) {
+      try {
+        const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+        console.log("Accounts:", JSON.stringify(r.data,null,2));
+        linked = (r.data?.length ?? 0) > 0;
+      } catch (e: any) { console.error("Error in listUserAccounts", e);}
+    }
     res.json({ linked });
-  } catch (err) {
+  } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
 });

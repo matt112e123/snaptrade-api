@@ -855,22 +855,21 @@ app.get("/realtime/linked", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
     const userSecret = String(req.query.userSecret || getSecret(userId) || "");
-    if (!userId || !userSecret) return res.status(400).json({ linked: false, error: "Missing userId or userSecret" });
-
     const snaptrade = mkClient();
+    console.log({ userId, userSecret });
     let linked = false;
-
     try {
       const r = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+      console.log("Auths:", JSON.stringify(r.data,null,2));
       linked = (r.data?.length ?? 0) > 0;
-    } catch (e: any) {}
+    } catch (e: any) { console.error("Error in listBrokerageAuthorizations", e); }
     if (!linked) {
       try {
         const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+        console.log("Accounts:", JSON.stringify(r.data,null,2));
         linked = (r.data?.length ?? 0) > 0;
-      } catch (e: any) {}
+      } catch (e: any) { console.error("Error in listUserAccounts", e);}
     }
-
     res.json({ linked });
   } catch (err: any) {
     res.status(500).json(errPayload(err));

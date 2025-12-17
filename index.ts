@@ -856,22 +856,32 @@ app.get("/realtime/linked", async (req, res) => {
     const userId = String(req.query.userId || "");
     const userSecret = String(req.query.userSecret || getSecret(userId) || "");
     const snaptrade = mkClient();
-    console.log({ userId, userSecret });
+
+    console.log(`[LINKED] called`, { userId, userSecret });
+
     let linked = false;
     try {
       const r = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
-      console.log("Auths:", JSON.stringify(r.data,null,2));
+      console.log(`[LINKED] Auths`, { userId, count: r.data?.length, auths: r.data });
       linked = (r.data?.length ?? 0) > 0;
-    } catch (e: any) { console.error("Error in listBrokerageAuthorizations", e); }
+    } catch (e) {
+      console.error(`[LINKED] Error in listBrokerageAuthorizations`, { userId }, errPayload(e));
+    }
+
     if (!linked) {
       try {
         const r = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-        console.log("Accounts:", JSON.stringify(r.data,null,2));
+        console.log(`[LINKED] Accounts`, { userId, count: r.data?.length, accounts: r.data });
         linked = (r.data?.length ?? 0) > 0;
-      } catch (e: any) { console.error("Error in listUserAccounts", e);}
+      } catch (e) {
+        console.error(`[LINKED] Error in listUserAccounts`, { userId }, errPayload(e));
+      }
     }
+
     res.json({ linked });
-  } catch (err: any) {
+    console.log(`[LINKED] RESULT`, { userId, linked });
+  } catch (err) {
+    console.error(`[LINKED] Route error`, err);
     res.status(500).json(errPayload(err));
   }
 });

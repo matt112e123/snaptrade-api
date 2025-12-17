@@ -477,6 +477,10 @@ function getSecret(userId: string): string {
   if (Date.now() > row.expiresAt) { USER_SECRETS.delete(userId); return ""; }
   return row.secret;
 }
+function invalidateUserCreds(userId: string) {
+  USER_SECRETS.delete(userId);
+  pool.query('DELETE FROM snaptrade_users WHERE user_id = $1', [userId]);
+}
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of USER_SECRETS) if (now > v.expiresAt) USER_SECRETS.delete(k);
@@ -738,20 +742,25 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
-    if (fresh || !userId || !userSecret) {
-      userId = `dev-${Date.now()}`;
-      const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-      userSecret = (reg?.data as any)?.userSecret;
-      if (!userSecret) {
-        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-      }
-    } else {
-      try {
-        await snaptrade.authentication.registerSnapTradeUser({ userId });
-      } catch (e: any) {
-        if (![400, 409].includes(e?.response?.status)) throw e;
-      }
-    }
+   if (fresh || !userId || !userSecret) {
+  userId = `dev-${Date.now()}`;
+  const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+  userSecret = (reg?.data as any)?.userSecret;
+} else {
+  // Check if the credentials are still valid before reuse!
+  try {
+    await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+  } catch (err: any) {
+  if ((err as any)?.response?.status === 401) {
+    invalidateUserCreds(userId);
+    userId = `dev-${Date.now()}`;
+    const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+    userSecret = (reg?.data as any)?.userSecret;
+  } else {
+    throw err;
+  }
+}
+}
 
     // store secret for the polling endpoints
 // store secret for the polling endpoints

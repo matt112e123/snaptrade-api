@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { Snaptrade } from "snaptrade-typescript-sdk";
-import { v4 as uuidv4 } from "uuid";
 import os from "os";
 import cors from "cors";
 import fs from "fs";
@@ -477,10 +476,6 @@ function getSecret(userId: string): string {
   if (Date.now() > row.expiresAt) { USER_SECRETS.delete(userId); return ""; }
   return row.secret;
 }
-function invalidateUserCreds(userId: string) {
-  USER_SECRETS.delete(userId);
-  pool.query('DELETE FROM snaptrade_users WHERE user_id = $1', [userId]);
-}
 setInterval(() => {
   const now = Date.now();
   for (const [k, v] of USER_SECRETS) if (now > v.expiresAt) USER_SECRETS.delete(k);
@@ -742,25 +737,20 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
-   if (fresh || !userId || !userSecret) {
-  userId = `dev-${Date.now()}`;
-  const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-  userSecret = (reg?.data as any)?.userSecret;
-} else {
-  // Check if the credentials are still valid before reuse!
-  try {
-    await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
-  } catch (err: any) {
-  if ((err as any)?.response?.status === 401) {
-    invalidateUserCreds(userId);
-    userId = `dev-${Date.now()}`;
-    const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-    userSecret = (reg?.data as any)?.userSecret;
-  } else {
-    throw err;
-  }
-}
-}
+    if (fresh || !userId || !userSecret) {
+      userId = `dev-${Date.now()}`;
+      const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+      userSecret = (reg?.data as any)?.userSecret;
+      if (!userSecret) {
+        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
+      }
+    } else {
+      try {
+        await snaptrade.authentication.registerSnapTradeUser({ userId });
+      } catch (e: any) {
+        if (![400, 409].includes(e?.response?.status)) throw e;
+      }
+    }
 
     // store secret for the polling endpoints
 // store secret for the polling endpoints
@@ -1384,10 +1374,7 @@ async function getAccountBroker(
 }
 
 app.post("/trade/placeOrder", async (req, res) => {
-    const tradeId = uuidv4();
 console.log("PlaceOrder received:", req.body); // <-- Add this!
-
-
   try {
     const {
       userId,
@@ -1451,7 +1438,6 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
       userId,
       userSecret,
       accountId, // ✅ keep camelCase here for runtime
-      tradeId, // Only here!
       body: {
         action,
         order_type: orderType,
@@ -1717,25 +1703,6 @@ await saveSnaptradeUser(userId, userSecret, summary);
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
-});
-
-app.get('/user/secret', async (req, res) => {
-  const userId = String(req.query.userId || '');
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-
-  // Try fetching from short-term cache first
-  let userSecret = getSecret(userId);
-  // If not in cache, get from DB
-  if (!userSecret) {
-    userSecret = await fetchUserSecretFromDB(userId);
-  }
-
-  if (!userSecret) {
-    return res.status(404).json({ error: 'No userSecret found for userId' });
-  }
-
-  // Don't ever log the secret in prod!
-  return res.json({ userSecret });
 });
 
 /* ---------------------------- 404 last ---------------------------- */

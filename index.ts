@@ -740,12 +740,10 @@ async function handleConnect(req: express.Request, res: express.Response) {
     if (fresh || !userId || !userSecret) {
       userId = `dev-${Date.now()}`;
       const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-console.log("----> REGISTER CALL for userId:", userId);
-console.log("----> SnapTrade register response:", reg.data);
-userSecret = (reg?.data as any)?.userSecret;
-if (!userSecret) {
-  return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-}
+      userSecret = (reg?.data as any)?.userSecret;
+      if (!userSecret) {
+        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
+      }
     } else {
       try {
         await snaptrade.authentication.registerSnapTradeUser({ userId });

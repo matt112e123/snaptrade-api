@@ -5,7 +5,6 @@ import os from "os";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-import { v4 as uuidv4 } from "uuid";
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -1375,10 +1374,7 @@ async function getAccountBroker(
 }
 
 app.post("/trade/placeOrder", async (req, res) => {
-    const tradeId = uuidv4();
 console.log("PlaceOrder received:", req.body); // <-- Add this!
-
-
   try {
     const {
       userId,
@@ -1442,7 +1438,6 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
       userId,
       userSecret,
       accountId, // ✅ keep camelCase here for runtime
-      tradeId, // Only here!
       body: {
         action,
         order_type: orderType,
@@ -1708,25 +1703,6 @@ await saveSnaptradeUser(userId, userSecret, summary);
     console.error("❌ Webhook processing error:", err);
     res.status(500).send("error");
   }
-});
-
-app.get('/user/secret', async (req, res) => {
-  const userId = String(req.query.userId || '');
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-
-  // Try fetching from short-term cache first
-  let userSecret = getSecret(userId);
-  // If not in cache, get from DB
-  if (!userSecret) {
-    userSecret = await fetchUserSecretFromDB(userId);
-  }
-
-  if (!userSecret) {
-    return res.status(404).json({ error: 'No userSecret found for userId' });
-  }
-
-  // Don't ever log the secret in prod!
-  return res.json({ userSecret });
 });
 
 /* ---------------------------- 404 last ---------------------------- */

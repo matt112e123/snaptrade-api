@@ -5,7 +5,6 @@ import os from "os";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-import { v4 as uuidv4 } from "uuid";
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -1394,8 +1393,6 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
 
     const snaptrade = mkClient();
 
-
-    
     // Validate trading capability before placing order
     const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
     if (!check.ok) {
@@ -1434,14 +1431,13 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
 const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
       return res.json(order.data);
     }
-    const tradeId = uuidv4(); // Generate a new UUID for each order
+
 
     // Place order
     const order = await (snaptrade.trading as any).placeOrder({
       userId,
       userSecret,
       accountId, // ✅ keep camelCase here for runtime
-      tradeId, // <--- pass the tradeId param here
       body: {
         action,
         order_type: orderType,

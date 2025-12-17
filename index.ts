@@ -854,8 +854,10 @@ app.get("/connect/redirect", handleConnect); // alias for your frontend button
 app.get("/realtime/linked", async (req, res) => {
   try {
     const userId = String(req.query.userId || "");
-    const userSecret = String(req.query.userSecret || getSecret(userId) || "");
-    const snaptrade = mkClient();
+let userSecret = String(req.query.userSecret || getSecret(userId) || "");
+if (!userSecret) {
+  userSecret = await fetchUserSecretFromDB(userId);
+}    const snaptrade = mkClient();
 
     console.log(`[LINKED] called`, { userId, userSecret });
 

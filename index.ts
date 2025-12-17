@@ -1350,6 +1350,29 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
  * "limitPrice": 180.50          // only for Limit orders
  * }
  */
+
+function isCryptoBroker(brokerName = '') {
+  const normalized = String(brokerName).toUpperCase();
+  return ['COINBASE', 'KRAKEN', 'BINANCE', 'GEMINI', 'BITSTAMP'].includes(normalized);
+}
+
+// This helper gets the broker for an account
+async function getAccountBroker(
+  snaptrade: Snaptrade,
+  userId: string,
+  userSecret: string,
+  accountId: string
+): Promise<string> {
+  const accs = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+  const acct = (accs.data || []).find((acc: any) =>
+    acc.id === accountId ||
+    acc.accountId === accountId ||
+    acc.number === accountId ||
+    acc.guid === accountId
+  );
+  return acct?.broker || acct?.broker_slug || acct?.provider || '';
+}
+
 app.post("/trade/placeOrder", async (req, res) => {
 console.log("PlaceOrder received:", req.body); // <-- Add this!
   try {
@@ -1357,11 +1380,11 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
       userId,
       userSecret,
       accountId,
-      symbol,
-      action,
-      orderType,
-      quantity,
-      limitPrice,
+      symbol,        // e.g. "AAPL" or "BTC-USD"
+      action,        // "Buy" or "Sell"
+      orderType,     // "Market" or "Limit"
+      quantity,      // shares or crypto amount
+      limitPrice     // optional
     } = req.body;
 
     if (!userId || !userSecret || !accountId || !symbol || !action || !orderType || !quantity) {
@@ -1377,6 +1400,38 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
       if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
       return res.status(403).json(payload);
     }
+
+    // 👉 Get the broker name for the account
+    const broker = await getAccountBroker(snaptrade, userId, userSecret, accountId);
+
+      // --- CRYPTO TRADING branch ---
+    if (isCryptoBroker(broker)) {
+      // User must submit symbol as "BASE-QUOTE", e.g. "BTC-USD"
+      if (!symbol.includes('-')) {
+        return res.status(400).json({ error: "Crypto trades require symbol in BASE-QUOTE format like 'ETH-USD'" });
+      }
+      // Payload for SnapTrade's crypto order endpoint
+      const cryptoPayload = {
+        account_id: accountId,
+        instrument: {
+          symbol: symbol,
+          type: "CRYPTOCURRENCY_PAIR"
+        },
+        side: action.toUpperCase(),      // "BUY" or "SELL"
+        type: orderType.toUpperCase(),   // "MARKET" or "LIMIT"
+        amount: String(quantity),        // how much BASE asset
+        time_in_force: "GTC",            // or "DAY"
+        post_only: false
+      };
+      if (orderType.toUpperCase() === "LIMIT" && limitPrice) {
+      (cryptoPayload as any).price = limitPrice;
+      }
+
+      // Place crypto order (endpoint may differ based on SDK version)
+const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
+      return res.json(order.data);
+    }
+
 
     // Place order
     const order = await (snaptrade.trading as any).placeOrder({

@@ -1705,6 +1705,25 @@ await saveSnaptradeUser(userId, userSecret, summary);
   }
 });
 
+app.get('/user/secret', async (req, res) => {
+  const userId = String(req.query.userId || '');
+  if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+  // Try fetching from short-term cache first
+  let userSecret = getSecret(userId);
+  // If not in cache, get from DB
+  if (!userSecret) {
+    userSecret = await fetchUserSecretFromDB(userId);
+  }
+
+  if (!userSecret) {
+    return res.status(404).json({ error: 'No userSecret found for userId' });
+  }
+
+  // Don't ever log the secret in prod!
+  return res.json({ userSecret });
+});
+
 /* ---------------------------- 404 last ---------------------------- */
 
 app.use((_req, res) => res.status(404).type("text/plain").send("Not found"));

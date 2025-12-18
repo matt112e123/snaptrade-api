@@ -1319,19 +1319,22 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
 
     // Final fallback: try building a generic login link that requests trading
     try {
-      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-        userId,
-        userSecret,
-        immediateRedirect: false,
-        connectionType: "trade",
-      });
-      const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-    } catch (e: any) {
-      console.warn("Could not build generic reauth link:", (e && e.message) || e);
-    }
-
-    return { ok: false, reason: "no_trading_authorization_found" };
+  const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+    userId,
+    userSecret,
+    immediateRedirect: false,
+    connectionType: "trade",  // this is the magic!
+  });
+  const candidate = loginResp?.data?.redirectURI ||
+    loginResp?.data?.redirectUri ||
+    loginResp?.data?.loginRedirectURI ||
+    loginResp?.data?.loginRedirectUri ||
+    (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+  if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+} catch (e) {
+  console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
+}
+return { ok: false, reason: "no_trading_authorization_found" };
   } catch (err: any) {
     console.error("ensureTradingEnabled error:", err);
     return { ok: false, reason: "error_checking" };

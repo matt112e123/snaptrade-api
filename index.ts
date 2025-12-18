@@ -753,36 +753,23 @@ async function handleConnect(req: express.Request, res: express.Response) {
     }
 
     // store secret for the polling endpoints
-// store secret for the polling endpoints
-putSecret(userId, userSecret);
+ // store secret for the polling endpoints
+    putSecret(userId, userSecret);
 
-// 🔄 FULL SYNC LOOP — wait until holdings finished syncing
-let summary;
-console.log(`⏳ Initial sync starting for ${userId}`);
+    // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
+    do {
+      const summary = await fetchAndSaveUserSummary(userId, userSecret);
+      if (!summary.syncing) {
+        console.log("✅ Fully synced. Saving FINAL summary.");
+        await saveSnaptradeUser(userId, userSecret, summary);
+        break;
+      }
+      console.log("⏳ Waiting for full sync...");
+      await new Promise(r => setTimeout(r, 2000));
+    } while (true);
 
-do {
-  const summary = await fetchAndSaveUserSummary(userId, userSecret);
-
-  // Only save when fully synced
-  if (!summary.syncing) {
-    console.log("✅ Fully synced. Saving FINAL summary.");
-    await saveSnaptradeUser(userId, userSecret, summary);
-    break;
-  }
-
-  console.log("⏳ Waiting for full sync...");
-  await new Promise(r => setTimeout(r, 2000));
-} while (true);
-
-
-console.log(`✅ User ${userId} fully synced and saved to DB.`);
-
-    
-    
-    // save the user to Postgres
-  await fetchAndSaveUserSummary(userId, userSecret);
-
-
+    console.log(`✅ User ${userId} fully synced and saved to DB.`);
+    await fetchAndSaveUserSummary(userId, userSecret);
 
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
     const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback
@@ -806,21 +793,28 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
       custom ||
       (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
 
-    // Accept optional connectionType and reconnect parameters from the request/query
-    // Allowed: "trade", "trade-if-available", "read"
-    const allowedTypes = new Set(["trade", "trade-if-available", "read"]);
-    let connectionType = String(req.query.connectionType || "trade-if-available");
-    if (!allowedTypes.has(connectionType)) connectionType = "trade-if-available";
+    // --- TYPE-SAFE CONNECTION TYPE LOGIC START ---
+    const allowedTypes = ["read", "trade", "trade-if-available"] as const;
+    type ConnectionType = typeof allowedTypes[number];
+    let connectionTypeRaw = typeof req.query.connectionType === "string"
+      ? req.query.connectionType
+      : "trade-if-available";
+    const connectionType: ConnectionType = allowedTypes.includes(connectionTypeRaw as any)
+      ? (connectionTypeRaw as ConnectionType)
+      : "trade-if-available";
+    // --- TYPE-SAFE CONNECTION TYPE LOGIC END ---
 
     // reconnect is optional - used to re-authorize an existing connection for trading
-    const reconnect = typeof req.query.reconnect === "string" && req.query.reconnect.trim() ? String(req.query.reconnect).trim() : undefined;
+    const reconnect = typeof req.query.reconnect === "string" && req.query.reconnect.trim()
+      ? String(req.query.reconnect).trim()
+      : undefined;
 
     const loginResp = await snaptrade.authentication.loginSnapTradeUser({
       userId,
       userSecret,
       immediateRedirect: true,
       customRedirect: requested,
-  connectionType: "read", // <<<< THIS will show ALL brokers by default
+      connectionType, // safe
       ...(reconnect ? { reconnect } : {}),
     });
 
@@ -834,14 +828,12 @@ console.log(`✅ User ${userId} fully synced and saved to DB.`);
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
-    // ⚡️ THIS IS THE FIX: Redirect the browser instead of returning JSON
     res.redirect(302, redirectURI);
 
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
 }
-
 
 app.get("/connect", handleConnect);
 app.get("/connect/redirect", handleConnect); // alias for your frontend button

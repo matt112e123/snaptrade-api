@@ -1180,6 +1180,7 @@ app.get("/debug/holdings", async (req, res) => {
  * Returns: { ok: boolean, reason?: string, reauthUrl?: string }
  */
 // Replace existing ensureTradingEnabled(...) with this implementation
+// Replace the existing ensureTradingEnabled function with this full implementation
 async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: string, accountId?: string) {
   try {
     // 1) Try to list authorizations
@@ -1261,27 +1262,20 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
         ? matchedAuth.brokerage.authorization_types.map((t: any) => String(t.type).toLowerCase())
         : [];
 
-      // Only consider as trading-enabled if we have a TRUE trading flag or EXPLICIT trading permission
-      const isExplicitTrading =
-          (tradingFlag === true)
-          || perms.includes("trade")
-          || perms.includes("trading")
-          || perms.includes("orders")
-          || authType === "trade"
-          || brokerAllows.includes("trade")
-          || matchedAuth?.brokerage?.allows_trading === true;
-
-      // EXTRA: Guard against matchedAuth.type being "read" with all fields undefined/null
-      const isClearlyReadOnly =
-          (authType === "read" || authType === "readonly") &&
-          (tradingFlag === undefined || tradingFlag === false) &&
-          perms.length === 0;
-
-      if (isExplicitTrading && !isClearlyReadOnly) {
+      if (
+        tradingFlag === true ||
+        perms.includes("trade") ||
+        perms.includes("trading") ||
+        perms.includes("orders") ||
+        authType === "trade" || 
+        authType === "trade" ||
+        brokerAllows.includes("trade") ||
+        matchedAuth?.brokerage?.allows_trading === true
+      ) {
         return { ok: true };
       }
 
-      // Not trading-enabled: Now ALWAYS try to build/return the reauthUrl!
+      // If we have an auth id but it's not marked as trading, offer reconnect link
       const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
       if (reconnectId) {
         try {
@@ -1292,11 +1286,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
             connectionType: "trade",
             reconnect: reconnectId,
           });
-          const candidate = loginResp?.data?.redirectURI ||
-            loginResp?.data?.redirectUri ||
-            loginResp?.data?.loginRedirectURI ||
-            loginResp?.data?.loginRedirectUri ||
-            (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+          const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
           if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
         } catch (e: any) {
           console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
@@ -1329,22 +1319,22 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
 
     // Final fallback: try building a generic login link that requests trading
     try {
-      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-        userId,
-        userSecret,
-        immediateRedirect: false,
-        connectionType: "trade",  // this is the magic!
-      });
-      const candidate = loginResp?.data?.redirectURI ||
-        loginResp?.data?.redirectUri ||
-        loginResp?.data?.loginRedirectURI ||
-        loginResp?.data?.loginRedirectUri ||
-        (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-    } catch (e) {
-      console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
-    }
-    return { ok: false, reason: "no_trading_authorization_found" };
+  const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+    userId,
+    userSecret,
+    immediateRedirect: false,
+    connectionType: "trade",  // this is the magic!
+  });
+  const candidate = loginResp?.data?.redirectURI ||
+    loginResp?.data?.redirectUri ||
+    loginResp?.data?.loginRedirectURI ||
+    loginResp?.data?.loginRedirectUri ||
+    (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+  if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+} catch (e) {
+  console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
+}
+return { ok: false, reason: "no_trading_authorization_found" };
   } catch (err: any) {
     console.error("ensureTradingEnabled error:", err);
     return { ok: false, reason: "error_checking" };

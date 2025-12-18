@@ -1403,12 +1403,20 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
     const snaptrade = mkClient();
 
     // Validate trading capability before placing order
-    const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
-    if (!check.ok) {
-      const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
-      if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
-      return res.status(403).json(payload);
-    }
+   // Robust polling: wait up to 30 seconds for trading to be enabled
+let check, tries = 0, maxTries = 15;
+do {
+  check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+  if (check.ok) break;
+  await new Promise(r => setTimeout(r, 2000)); // wait 2s between tries
+  tries++;
+} while (!check.ok && tries < maxTries);
+
+if (!check.ok) {
+  const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
+  if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
+  return res.status(403).json(payload);
+}
 
     // 👉 Get the broker name for the account
     const broker = await getAccountBroker(snaptrade, userId, userSecret, accountId);

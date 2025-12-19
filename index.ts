@@ -1438,6 +1438,8 @@ if (
   params.price = Number(limitPrice);
 }
 
+console.log("FINAL SnapTrade order payload:", params);
+
 const order = await snaptrade.trading.placeOrder(params);
 res.json(order.data);
 // --- END of Equity order block --- 

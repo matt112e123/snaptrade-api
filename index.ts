@@ -1414,31 +1414,32 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
 
 
     // Place order
-let params: any = {
+let params: {
+  tradeId: string;          // <-- add this
+  userId: any;
+  userSecret: any;
+  account_id: any;
+  action: any;
+  symbol: any;
+  order_type: any;
+  time_in_force: string;
+  units: number;
+  price?: number;
+} = {
+  tradeId,                  // <-- add this
   userId,
   userSecret,
-  tradeId,                 // optional, SnapTrade simply ignores extra fields
-  account_id: accountId,   // <-- CORRECT
+  account_id: accountId,   // snake_case required
   action,
   symbol,
-  order_type: orderType,   // <-- CORRECT
+  order_type: orderType,
   time_in_force: "Day",
-  units: Number(quantity)  // <-- CORRECT
+  units: Number(quantity)
 };
 
-if (orderType.toUpperCase() === "LIMIT" && limitPrice !== undefined && limitPrice !== null) {
-  params.price = Number(limitPrice);
+if (orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null) {
+  params.price = Number(limitPrice); // TS now allows this
 }
-
-if (
-  orderType.toUpperCase() === "LIMIT" &&
-  limitPrice !== undefined &&
-  limitPrice !== null
-) {
-  params.price = Number(limitPrice);
-}
-
-console.log("FINAL SnapTrade order payload:", params);
 
 const order = await snaptrade.trading.placeOrder(params);
 res.json(order.data);

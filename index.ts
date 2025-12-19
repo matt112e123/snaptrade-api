@@ -1181,7 +1181,12 @@ app.get("/debug/holdings", async (req, res) => {
  */
 // Replace existing ensureTradingEnabled(...) with this implementation
 // Replace the existing ensureTradingEnabled function with this full implementation
-async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: string, accountId?: string) {
+async function ensureTradingEnabled(
+  snaptrade: any,
+  userId: string,
+  userSecret: string,
+  accountId?: string
+) {
   try {
     // 1) Try to list authorizations
     let authsResp: any = null;
@@ -1193,7 +1198,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
     }
     const auths: any[] = authsResp?.data || [];
 
-    // 2) Try to find a matched auth that references this account (various shapes)
+    // 2) Try to find a matched auth that references this account
     let matchedAuth: any = null;
     if (Array.isArray(auths) && auths.length && accountId) {
       for (const a of auths) {
@@ -1212,7 +1217,7 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       }
     }
 
-    // Fallback: if we didn't find matchedAuth above, try matching the account's brokerage_authorization -> auth id
+    // Fallback: if not found above, find by brokerage_authorization link
     if (!matchedAuth && accountId) {
       try {
         const accResp: any = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
@@ -1235,106 +1240,64 @@ async function ensureTradingEnabled(snaptrade: any, userId: string, userSecret: 
       }
     }
 
-    // Short summary log if we have a match
-    if (matchedAuth) {
-      console.log("ensureTradingEnabled: matchedAuth summary =>",
-        {
-          id: matchedAuth.id || matchedAuth.connection_id || matchedAuth.connectionId,
-          broker: matchedAuth.broker || matchedAuth.broker_slug || matchedAuth.provider || matchedAuth?.brokerage?.slug,
-          permissions: matchedAuth.permissions,
-          trading_enabled: matchedAuth.trading_enabled ?? matchedAuth.supports_trading ?? matchedAuth.allow_trading ?? matchedAuth.canTrade,
-          type: matchedAuth.type
-        }
-      );
+    // If we found an auth, check type
+    if (matchedAuth && matchedAuth.type && matchedAuth.type.toLowerCase() === "trade") {
+      return { ok: true };
     }
-
-    // If matchedAuth exists, robustly detect trading capability from multiple fields/shapes
-    if (matchedAuth) {
-      const perms = Array.isArray(matchedAuth?.permissions)
-        ? matchedAuth.permissions.map((p: any) => String(p).toLowerCase())
-        : [];
-
-      const tradingFlag = matchedAuth?.trading_enabled ?? matchedAuth?.supports_trading ?? matchedAuth?.allow_trading ?? matchedAuth?.canTrade;
-
-      const authType = (typeof matchedAuth?.type === "string" ? matchedAuth.type.toLowerCase() : undefined);
-
-      const brokerAllows = Array.isArray(matchedAuth?.brokerage?.authorization_types)
-        ? matchedAuth.brokerage.authorization_types.map((t: any) => String(t.type).toLowerCase())
-        : [];
-
-      if (
-        tradingFlag === true ||
-        perms.includes("trade") ||
-        perms.includes("trading") ||
-        perms.includes("orders") ||
-        authType === "trade" || 
-        authType === "trade" ||
-        brokerAllows.includes("trade") ||
-        matchedAuth?.brokerage?.allows_trading === true
-      ) {
-        return { ok: true };
+    // If we have an auth id, offer reconnect link if not marked as trading
+    const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
+    if (reconnectId) {
+      try {
+        const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+          userId,
+          userSecret,
+          immediateRedirect: false,
+          connectionType: "trade",
+          reconnect: reconnectId,
+        });
+        const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri ||
+                          loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri ||
+                          (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+        if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+      } catch (e: any) {
+        console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
       }
-
-      // If we have an auth id but it's not marked as trading, offer reconnect link
-      const reconnectId = matchedAuth?.id || matchedAuth?.connection_id || matchedAuth?.connectionId;
-      if (reconnectId) {
-        try {
-          const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-            userId,
-            userSecret,
-            immediateRedirect: false,
-            connectionType: "trade",
-            reconnect: reconnectId,
-          });
-          const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri || loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri || (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-          if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-        } catch (e: any) {
-          console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
-        }
-      }
-
       return { ok: false, reason: "trade_not_enabled" };
     }
 
-    // If no matchedAuth, inspect account objects for trading flags
+    // If no matchedAuth, inspect account objects for trading capability
     try {
       const aResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
       const accounts = aResp?.data || [];
       for (const acct of accounts) {
         const aid = acct?.id || acct?.accountId || acct?.number || acct?.guid;
-        if (!accountId || aid === accountId) {
-          const accFlags = [
-            acct?.trading_enabled,
-            acct?.supports_trading,
-            acct?.allow_trading,
-            acct?.canTrade,
-            acct?.permissions && Array.isArray(acct.permissions) && acct.permissions.map((p: any) => String(p).toLowerCase()).includes("trade")
-          ];
-          if (accFlags.some(f => f === true)) return { ok: true };
+        if ((!accountId || aid === accountId) && acct.type && acct.type.toLowerCase() === "trade") {
+          return { ok: true };
         }
       }
     } catch (e: any) {
       console.warn("Could not listUserAccounts while checking trading support:", (e && e.message) || e);
     }
 
-    // Final fallback: try building a generic login link that requests trading
+    // Final fallback: try building a generic login link for trading
     try {
-  const loginResp = await snaptrade.authentication.loginSnapTradeUser({
-    userId,
-    userSecret,
-    immediateRedirect: false,
-    connectionType: "trade",  // this is the magic!
-  });
-  const candidate = loginResp?.data?.redirectURI ||
-    loginResp?.data?.redirectUri ||
-    loginResp?.data?.loginRedirectURI ||
-    loginResp?.data?.loginRedirectUri ||
-    (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-  if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-} catch (e) {
-  console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
-}
-return { ok: false, reason: "no_trading_authorization_found" };
+      const loginResp = await snaptrade.authentication.loginSnapTradeUser({
+        userId,
+        userSecret,
+        immediateRedirect: false,
+        connectionType: "trade",
+      });
+      const candidate = loginResp?.data?.redirectURI ||
+        loginResp?.data?.redirectUri ||
+        loginResp?.data?.loginRedirectURI ||
+        loginResp?.data?.loginRedirectUri ||
+        (typeof loginResp?.data === "string" ? loginResp.data : undefined);
+      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
+    } catch (e) {
+      console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
+    }
+
+    return { ok: false, reason: "no_trading_authorization_found" };
   } catch (err: any) {
     console.error("ensureTradingEnabled error:", err);
     return { ok: false, reason: "error_checking" };

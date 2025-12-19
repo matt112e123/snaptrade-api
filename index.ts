@@ -1430,7 +1430,6 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
 
     // Place order
   const params: any = {
-      tradeId, // <-- EXACTLY REQUIRED BY SDK
       userId,
       userSecret,
       account_id: accountId, // <-- snake_case required by SnapTrade
@@ -1450,8 +1449,17 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
     console.log("FINAL SnapTrade order payload:", JSON.stringify(params));
 
     // SUBMIT THIS OBJECT ONLY!
-    const order = await snaptrade.trading.placeOrder(params);
-    res.json(order.data);
+const order = await snaptrade.trading.placeForceOrder({
+    userId,
+    userSecret,
+    account_id: accountId,
+    action,
+    symbol,
+    order_type: orderType,
+    time_in_force: "Day",
+    units: Number(quantity),
+    ...(orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null ? { price: Number(limitPrice) } : {})
+});    res.json(order.data);
 
   } catch (err: any) {
     console.error("ORDER ERROR:", err?.response?.data || err?.data || err.message || err);

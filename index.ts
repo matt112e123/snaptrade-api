@@ -1343,7 +1343,8 @@ async function getAccountBroker(
 import { v4 as uuidv4 } from "uuid"; // npm install uuid
 
 app.post("/trade/placeOrder", async (req, res) => {
-console.log("PlaceOrder received:", req.body); // <-- Add this!
+console.log("PlaceOrder received:", req.body); // <-- Add this!app.post("/trade/placeOrder", async (req, res) => {
+  console.log("PlaceOrder received:", req.body);
 
   const tradeId = uuidv4();
 
@@ -1352,11 +1353,11 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
       userId,
       userSecret,
       accountId,
-      symbol,        // e.g. "AAPL" or "BTC-USD"
-      action,        // "Buy" or "Sell"
-      orderType,     // "Market" or "Limit"
-      quantity,      // shares or crypto amount
-      limitPrice     // optional
+      symbol,
+      action,
+      orderType,
+      quantity,
+      limitPrice
     } = req.body;
 
     if (!userId || !userSecret || !accountId || !symbol || !action || !orderType || !quantity) {
@@ -1365,27 +1366,25 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!
 
     const snaptrade = mkClient();
 
-    // Validate trading capability before placing order
-   // Robust polling: wait up to 30 seconds for trading to be enabled
-let check, tries = 0, maxTries = 15;
-do {
-  check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
-  if (check.ok) break;
-  await new Promise(r => setTimeout(r, 2000)); // wait 2s between tries
-  tries++;
-} while (!check.ok && tries < maxTries);
+    let check, tries = 0, maxTries = 15;
+    do {
+      check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+      if (check.ok) break;
+      await new Promise(r => setTimeout(r, 2000));
+      tries++;
+    } while (!check.ok && tries < maxTries);
 
-if (!check.ok) {
-  const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
-  if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
-  return res.status(403).json(payload);
-}
+    if (!check.ok) {
+      const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
+      if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
+      return res.status(403).json(payload);
+    }
 
-    // 👉 Get the broker name for the account
+    // --- CRYPTO (NO CHANGE) ---
     const broker = await getAccountBroker(snaptrade, userId, userSecret, accountId);
 
-      // --- CRYPTO TRADING branch ---
     if (isCryptoBroker(broker)) {
+
       // User must submit symbol as "BASE-QUOTE", e.g. "BTC-USD"
       if (!symbol.includes('-')) {
         return res.status(400).json({ error: "Crypto trades require symbol in BASE-QUOTE format like 'ETH-USD'" });
@@ -1414,48 +1413,37 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
 
 
     // Place order
-let params: {
-  tradeId: string;          // <-- add this
-  userId: any;
-  userSecret: any;
-  account_id: any;
-  action: any;
-  symbol: any;
-  order_type: any;
-  time_in_force: string;
-  units: number;
-  price?: number;
-} = {
-  tradeId,                  // <-- add this
-  userId,
-  userSecret,
-  account_id: accountId,   // snake_case required
-  action,
-  symbol,
-  order_type: orderType,
-  time_in_force: "Day",
-  units: Number(quantity)
-};
+  const params: any = {
+      tradeId, // <-- EXACTLY REQUIRED BY SDK
+      userId,
+      userSecret,
+      account_id: accountId, // <-- snake_case required by SnapTrade
+      action,
+      symbol,
+      order_type: orderType, // <-- snake_case required by SnapTrade
+      time_in_force: "Day", // or as desired
+      units: Number(quantity) // <-- snake_case required by SnapTrade
+    };
 
-if (orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null) {
-  params.price = Number(limitPrice); // TS now allows this
-}
+    // only add price if limit
+    if (orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null) {
+      params.price = Number(limitPrice);
+    }
 
-const order = await snaptrade.trading.placeOrder(params);
-res.json(order.data);
-// --- END of Equity order block --- 
+    // LOG THE FINAL PAYLOAD TO VERIFY
+    console.log("FINAL SnapTrade order payload:", JSON.stringify(params));
 
-res.json(order.data);
-
+    // SUBMIT THIS OBJECT ONLY!
+    const order = await snaptrade.trading.placeOrder(params);
     res.json(order.data);
+
   } catch (err: any) {
-  // Enhanced error logging and error return
-  console.error("ORDER ERROR:", err?.response?.data || err?.data || err.message || err);
-  res.status(500).json({
-    error: "Order failed",
-    snaptradeDetail: err?.response?.data || err?.data || err.message || String(err)
-  });
-}
+    console.error("ORDER ERROR:", err?.response?.data || err?.data || err.message || err);
+    res.status(500).json({
+      error: "Order failed",
+      snaptradeDetail: err?.response?.data || err?.data || err.message || String(err)
+    });
+  }
 });
 
 

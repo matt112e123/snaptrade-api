@@ -722,6 +722,22 @@ app.get("/debug/auths", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
+
+app.get("/debug/brokerageAuths", async (req, res) => {
+  try {
+    const userId = String(req.query.userId || "");
+    const userSecret = String(req.query.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId) || "");
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: "Missing userId or userSecret" });
+    }
+    const snaptrade = mkClient();
+    const r = await snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret });
+    res.json(r.data);
+  } catch (err) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
 /* ------------------------- SnapTrade connect ---------------------- */
 /**
  * NAVIGATE here from the browser (not fetch/XHR):

@@ -1414,17 +1414,21 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
 
 
     // Place order
- let params: any = {
+let params: any = {
   userId,
   userSecret,
-  tradeId,
-  accountId,
+  tradeId,                 // optional, SnapTrade simply ignores extra fields
+  account_id: accountId,   // <-- CORRECT
   action,
-  order_type: orderType,      // or 'orderType' if that's what your SDK expects
+  symbol,
+  order_type: orderType,   // <-- CORRECT
   time_in_force: "Day",
-  units: Number(quantity),
-  symbol
+  units: Number(quantity)  // <-- CORRECT
 };
+
+if (orderType.toUpperCase() === "LIMIT" && limitPrice !== undefined && limitPrice !== null) {
+  params.price = Number(limitPrice);
+}
 
 if (
   orderType.toUpperCase() === "LIMIT" &&

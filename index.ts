@@ -1359,6 +1359,7 @@ async function getAccountBroker(
 import { v4 as uuidv4 } from "uuid"; // npm install uuid
 
 app.post("/trade/placeOrder", async (req, res) => {
+    console.log("PlaceOrder route HIT!");
 console.log("PlaceOrder received:", req.body); // <-- Add this!app.post("/trade/placeOrder", async (req, res) => {
   console.log("PlaceOrder received:", req.body);
 
@@ -1461,13 +1462,26 @@ const order = await snaptrade.trading.placeForceOrder({
     ...(orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null ? { price: Number(limitPrice) } : {})
 });    res.json(order.data);
 
-  } catch (err: any) {
-    console.error("ORDER ERROR:", err?.response?.data || err?.data || err.message || err);
+ } catch (err: any) {
+    let detail;
+    if (err?.response?.data) {
+        try {
+            // Always show JSON if possible
+            detail = typeof err.response.data === "object"
+                ? JSON.stringify(err.response.data, null, 2)
+                : err.response.data;
+        } catch {
+            detail = err.response.data;
+        }
+    } else {
+        detail = err?.data || err?.message || err;
+    }
+    console.error("ORDER ERROR BODY:", detail); // <<--- Always prints actual error JSON!
     res.status(500).json({
       error: "Order failed",
-      snaptradeDetail: err?.response?.data || err?.data || err.message || String(err)
+      snaptradeDetail: err?.response?.data || err?.data || err?.message || String(err)
     });
-  }
+}
 });
 
 

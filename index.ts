@@ -1463,10 +1463,19 @@ const order = await snaptrade.trading.placeForceOrder({
 });    res.json(order.data);
 
  } catch (err: any) {
+    // 🔎 Add more raw error logging!
+    console.error("ORDER RAW ERR:", err);
+    if (err?.response) {
+      console.error("ORDER RESPONSE DATA:", err.response.data);
+      console.error("ORDER RESPONSE STATUS:", err.response.status);
+      console.error("ORDER RESPONSE HEADERS:", err.response.headers);
+    } else {
+      console.error("No err.response present! err:", err);
+    }
+
     let detail;
     if (err?.response?.data) {
         try {
-            // Always show JSON if possible
             detail = typeof err.response.data === "object"
                 ? JSON.stringify(err.response.data, null, 2)
                 : err.response.data;
@@ -1476,7 +1485,8 @@ const order = await snaptrade.trading.placeForceOrder({
     } else {
         detail = err?.data || err?.message || err;
     }
-    console.error("ORDER ERROR BODY:", detail); // <<--- Always prints actual error JSON!
+    console.error("ORDER ERROR BODY:", detail);
+
     res.status(500).json({
       error: "Order failed",
       snaptradeDetail: err?.response?.data || err?.data || err?.message || String(err)

@@ -753,63 +753,34 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
+    // ✅ CHANGE 1: Only register NEW users, existing users fall through
     if (fresh || !userId || !userSecret) {
       userId = `dev-${Date.now()}`;
       const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-      userSecret = (reg?.data as any)?.userSecret;
-      if (!userSecret) {
-        return res.status(500).json({ error: "register returned no userSecret", raw: reg?.data });
-      }
-    } else {
-      try {
-        await snaptrade.authentication.registerSnapTradeUser({ userId });
-      } catch (e: any) {
-        if (![400, 409].includes(e?.response?.status)) throw e;
-      }
-    }
+      userSecret = reg?.data?.userSecret ?? "";
+}
 
-    // store secret for the polling endpoints
- // store secret for the polling endpoints
     putSecret(userId, userSecret);
 
-    // 🔄 FULL SYNC LOOP — wait until holdings finished syncing
-    do {
-      const summary = await fetchAndSaveUserSummary(userId, userSecret);
-      if (!summary.syncing) {
-        console.log("✅ Fully synced. Saving FINAL summary.");
-        await saveSnaptradeUser(userId, userSecret, summary);
-        break;
-      }
-      console.log("⏳ Waiting for full sync...");
-      await new Promise(r => setTimeout(r, 2000));
-    } while (true);
+    const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI");
+    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase;
 
-    console.log(`✅ User ${userId} fully synced and saved to DB.`);
-    await fetchAndSaveUserSummary(userId, userSecret);
-
-    const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI"); // e.g. apexmarkets://snaptrade-callback
-    const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase; // e.g. https://www.theapexinvestor.com/snaptrade-callback
-
-    // Append userId to BOTH
     const mobileURL = new URL(mobileBase);
     mobileURL.searchParams.set("userId", userId);
 
     const webURL = new URL(webBase);
     webURL.searchParams.set("userId", userId);
 
-    // only accept valid URLs from query
     const tryUrl = (v: unknown): string | "" => {
       if (typeof v !== "string" || !v.trim()) return "";
       try { return new URL(v).toString(); } catch { return ""; }
     };
     const custom = tryUrl(req.query.customRedirect) || tryUrl(req.query.redirect);
 
-    // Decide: web or mobile
     const requested =
       custom ||
       (req.query.web === "1" ? webURL.toString() : mobileURL.toString());
 
-    // --- TYPE-SAFE CONNECTION TYPE LOGIC START ---
     const allowedTypes = ["read", "trade", "trade-if-available"] as const;
     type ConnectionType = typeof allowedTypes[number];
     let connectionTypeRaw = typeof req.query.connectionType === "string"
@@ -818,9 +789,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
     const connectionType: ConnectionType = allowedTypes.includes(connectionTypeRaw as any)
       ? (connectionTypeRaw as ConnectionType)
       : "trade-if-available";
-    // --- TYPE-SAFE CONNECTION TYPE LOGIC END ---
 
-    // reconnect is optional - used to re-authorize an existing connection for trading
     const reconnect = typeof req.query.reconnect === "string" && req.query.reconnect.trim()
       ? String(req.query.reconnect).trim()
       : undefined;
@@ -830,7 +799,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
       userSecret,
       immediateRedirect: true,
       customRedirect: requested,
-      connectionType, // safe
+      connectionType,
       ...(reconnect ? { reconnect } : {}),
     });
 
@@ -844,6 +813,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
       return res.status(502).json({ error: "No redirect URL", raw: data });
     }
 
+    // ✅ CHANGE 2: Redirect immediately — no sync loop here
     res.redirect(302, redirectURI);
 
   } catch (err: any) {
@@ -852,8 +822,35 @@ async function handleConnect(req: express.Request, res: express.Response) {
 }
 
 app.get("/connect", handleConnect);
-app.get("/connect/redirect", handleConnect); // alias for your frontend button
+app.get("/connect/redirect", handleConnect);
 
+/* ✅ CHANGE 3: Sync loop moves here — fires AFTER user completes SnapTrade UI */
+app.get("/snaptrade-callback", async (req, res) => {
+  try {
+    const userId = req.query.userId as string;
+    const userSecret = getSecret(userId);
+
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: "Missing userId or userSecret" });
+    }
+
+    do {
+      const summary = await fetchAndSaveUserSummary(userId, userSecret);
+      if (!summary.syncing) {
+        console.log("✅ Fully synced. Saving FINAL summary.");
+        await saveSnaptradeUser(userId, userSecret, summary);
+        break;
+      }
+      console.log("⏳ Waiting for full sync...");
+      await new Promise(r => setTimeout(r, 2000));
+    } while (true);
+
+    console.log(`✅ User ${userId} fully synced and saved to DB.`);
+    res.redirect("/portfolio"); // 👈 change to wherever you send users after linking
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
 
 /* ----------------------------- linked ---------------------------- */
 

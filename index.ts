@@ -540,6 +540,19 @@ app.get("/test-alerts", async (req, res) => {
   res.json({ done: true });
 });
 
+app.get("/subscriptions/founding-status", async (req, res) => {
+  try {
+    const result = await pool.query(
+      "SELECT COUNT(*) as count FROM snaptrade_users WHERE is_subscribed = TRUE"
+    );
+    const count = parseInt(result.rows[0].count);
+    const isFoundingMember = count < 1000;
+    res.json({ isFoundingMember, spotsLeft: Math.max(0, 1000 - count) });
+  } catch (err) {
+    res.status(500).json({ isFoundingMember: false, spotsLeft: 0 });
+  }
+});
+
 /* --------------------------- diagnostics -------------------------- */
 
 app.get("/", (_req, res) => res.type("text/plain").send("ok"));

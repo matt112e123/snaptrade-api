@@ -44,9 +44,9 @@ const alertCooldown: { [key: string]: number } = {};
 const COOLDOWN_MS = 60 * 60 * 1000;
 
 const TIERS: Tier[] = [
-  { percent: 3,  label: "3%",  emoji: "📊" },
-  { percent: 5,  label: "5%",  emoji: "⚡️" },
-  { percent: 10, label: "10%", emoji: "🚨" },
+  { percent: 0.1, label: "0.1%", emoji: "📊" },
+  { percent: 5,   label: "5%",   emoji: "⚡️" },
+  { percent: 10,  label: "10%",  emoji: "🚨" },
 ];
 
 // ─── Get all users from DB ────────────────────────────────────────────────
@@ -181,7 +181,8 @@ async function checkUserPositions(user: User): Promise<void> {
 
     if (!openPrice || !currentPrice || openPrice === 0) continue;
 
-    const change = ((currentPrice - openPrice) / openPrice) * 100;
+   const change = 4.5; // TEMP TEST
+
     const absChange = Math.abs(change);
     const direction = change >= 0 ? "▲" : "▼";
     const directionWord = change >= 0 ? "up" : "down";

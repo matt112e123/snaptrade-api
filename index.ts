@@ -5,7 +5,7 @@ import os from "os";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
-import { startPriceAlertService } from "./priceAlertService";
+import { startPriceAlertService, runPriceAlertJob } from "./priceAlertService";
 import usersRouter from "./usersRoute";
 
 import pkg from "pg";
@@ -536,7 +536,6 @@ app.use((req, res, next) => { if (req.method === "OPTIONS") return res.sendStatu
 app.use("/users", usersRouter); 
 
 app.get("/test-alerts", async (req, res) => {
-  const { runPriceAlertJob } = await import("./priceAlertService.js");
   await runPriceAlertJob();
   res.json({ done: true });
 });

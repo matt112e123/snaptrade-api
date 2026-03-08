@@ -535,6 +535,11 @@ app.use((_, res, next) => { res.setHeader("Vary", "Origin"); next(); });
 app.use((req, res, next) => { if (req.method === "OPTIONS") return res.sendStatus(204); next(); });
 app.use("/users", usersRouter); 
 
+app.get("/test-alerts", async (req, res) => {
+  const { runPriceAlertJob } = await import("./priceAlertService.js");
+  await runPriceAlertJob();
+  res.json({ done: true });
+});
 
 /* --------------------------- diagnostics -------------------------- */
 

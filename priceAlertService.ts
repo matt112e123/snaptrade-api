@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import axios from "axios";
 import pkg from "pg";
+import { Snaptrade } from "snaptrade-typescript-sdk";
 const { Pool } = pkg;
 
 const pool = new Pool({
@@ -8,18 +9,21 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-const SNAPTRADE_BASE = "https://api.snaptrade.com/api/v1";
-const SNAPTRADE_CLIENT_ID = process.env.SNAPTRADE_CLIENT_ID as string;
-const SNAPTRADE_CONSUMER_KEY = process.env.SNAPTRADE_CONSUMER_KEY as string;
 const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID as string;
 const ONESIGNAL_API_KEY = process.env.ONESIGNAL_API_KEY as string;
 const POLYGON_API_KEY = process.env.POLYGON_API_KEY as string;
 
+function mkClient() {
+  return new Snaptrade({
+    clientId: process.env.SNAPTRADE_CLIENT_ID as string,
+    consumerKey: process.env.SNAPTRADE_CONSUMER_KEY as string,
+  });
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────
 interface User {
   userId: string;
-  snaptradeUserId: string;
-  snaptradeUserSecret: string;
+  userSecret: string;
   oneSignalPlayerId: string;
 }
 
@@ -29,21 +33,15 @@ interface Tier {
   emoji: string;
 }
 
-interface SnaptradePosition {
-  symbol: { symbol: string } | string;
-  quantity?: string | number;
-  units?: string | number;
-}
-
 interface PolygonSnapshot {
   ticker: string;
-  day: { o: number; c: number }; // open and current close
+  day: { o: number; c: number };
   lastTrade?: { p: number };
 }
 
 // ─── Cooldown tracker ─────────────────────────────────────────────────────
 const alertCooldown: { [key: string]: number } = {};
-const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per symbol per tier
+const COOLDOWN_MS = 60 * 60 * 1000;
 
 const TIERS: Tier[] = [
   { percent: 3,  label: "3%",  emoji: "📊" },
@@ -58,20 +56,48 @@ async function getAllUsers(): Promise<User[]> {
   );
   return result.rows.map((row) => ({
     userId: row.user_id,
-    snaptradeUserId: row.user_id,
-    snaptradeUserSecret: row.user_secret,
+    userSecret: row.user_secret,
     oneSignalPlayerId: row.onesignal_player_id,
   }));
 }
 
-// ─── Get positions from Snaptrade ─────────────────────────────────────────
-async function getUserPositions(snaptradeUserId: string, userSecret: string): Promise<SnaptradePosition[]> {
+// ─── Get positions using Snaptrade SDK ───────────────────────────────────
+async function getUserPositions(userId: string, userSecret: string): Promise<{ symbol: string; quantity: number }[]> {
   try {
-    const res = await axios.get(`${SNAPTRADE_BASE}/accounts/${snaptradeUserId}/positions`, {
-      params: { clientId: SNAPTRADE_CLIENT_ID, userSecret },
-      headers: { "Consumer-Key": SNAPTRADE_CONSUMER_KEY },
-    });
-    return res.data || [];
+    const snaptrade = mkClient();
+
+    // Step 1: get accounts
+    const accountsResp = await snaptrade.accountInformation.listUserAccounts({ userId, userSecret });
+    const accounts = accountsResp?.data || [];
+    if (!accounts.length) return [];
+
+    // Step 2: get positions for each account
+    const allPositions: { symbol: string; quantity: number }[] = [];
+
+    for (const account of accounts) {
+      const accountId = account?.id || account?.accountId || String(account?.id || "");
+      if (!accountId) continue;
+
+      try {
+        const posResp = await snaptrade.accountInformation.getUserAccountPositions({
+          userId,
+          userSecret,
+          accountId,
+        });
+        const positions = posResp?.data || [];
+        for (const pos of positions) {
+          const symbol = pos?.symbol?.symbol?.symbol || pos?.symbol?.symbol || pos?.symbol;
+          const quantity = parseFloat(String(pos?.units || pos?.quantity || 0));
+          if (symbol && quantity > 0) {
+            allPositions.push({ symbol: String(symbol).toUpperCase(), quantity });
+          }
+        }
+      } catch (e) {
+        console.warn(`⚠️ Could not fetch positions for account ${accountId}`);
+      }
+    }
+
+    return allPositions;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`❌ Failed to fetch positions:`, message);
@@ -79,16 +105,12 @@ async function getUserPositions(snaptradeUserId: string, userSecret: string): Pr
   }
 }
 
-// ─── Get current + open prices from Polygon ───────────────────────────────
+// ─── Get prices from Polygon ──────────────────────────────────────────────
 async function getPolygonSnapshots(symbols: string[]): Promise<{ [symbol: string]: PolygonSnapshot }> {
   if (!symbols.length) return {};
   try {
-    const tickers = symbols.join(",");
     const res = await axios.get(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers`, {
-      params: {
-        tickers,
-        apiKey: POLYGON_API_KEY,
-      },
+      params: { tickers: symbols.join(","), apiKey: POLYGON_API_KEY },
     });
     const snapshots: { [symbol: string]: PolygonSnapshot } = {};
     for (const ticker of res.data?.tickers || []) {
@@ -136,28 +158,22 @@ async function sendPushNotification(
 
 // ─── Check one user's positions ───────────────────────────────────────────
 async function checkUserPositions(user: User): Promise<void> {
-  const { userId, snaptradeUserId, snaptradeUserSecret, oneSignalPlayerId } = user;
+  const { userId, userSecret, oneSignalPlayerId } = user;
   if (!oneSignalPlayerId) return;
 
-  // Step 1: get positions from Snaptrade (symbols + quantities)
-  const positions = await getUserPositions(snaptradeUserId, snaptradeUserSecret);
-  if (!positions.length) return;
+  const positions = await getUserPositions(userId, userSecret);
+  if (!positions.length) {
+    console.log(`⚠️ No positions for ${userId}`);
+    return;
+  }
 
-  // Step 2: extract symbols
-  const symbols = positions.map((p) =>
-    typeof p.symbol === "object" ? p.symbol.symbol : p.symbol
-  ).filter(Boolean).map((s) => s.toUpperCase());
+  console.log(`📋 ${userId} has ${positions.length} positions: ${positions.map(p => p.symbol).join(", ")}`);
 
-  if (!symbols.length) return;
-
-  // Step 3: get real-time prices from Polygon
+  const symbols = positions.map((p) => p.symbol);
   const snapshots = await getPolygonSnapshots(symbols);
-  if (!Object.keys(snapshots).length) return;
 
-  // Step 4: check each position for price movement
   for (const position of positions) {
-    const symbol = (typeof position.symbol === "object" ? position.symbol.symbol : position.symbol).toUpperCase();
-    const snapshot = snapshots[symbol];
+    const snapshot = snapshots[position.symbol];
     if (!snapshot) continue;
 
     const openPrice = snapshot.day?.o;
@@ -170,27 +186,22 @@ async function checkUserPositions(user: User): Promise<void> {
     const direction = change >= 0 ? "▲" : "▼";
     const directionWord = change >= 0 ? "up" : "down";
 
-    // Find highest triggered tier
     let triggeredTier: Tier | null = null;
     for (const tier of [...TIERS].reverse()) {
       if (absChange >= tier.percent) { triggeredTier = tier; break; }
     }
     if (!triggeredTier) continue;
 
-    // Check cooldown
-    const cooldownKey = `${userId}_${symbol}_${triggeredTier.percent}`;
+    const cooldownKey = `${userId}_${position.symbol}_${triggeredTier.percent}`;
     if (alertCooldown[cooldownKey] && Date.now() - alertCooldown[cooldownKey] < COOLDOWN_MS) continue;
 
-    // Calculate dollar impact
-    const quantity = parseFloat(String(position.quantity ?? position.units ?? 0));
-    const dollarChange = (currentPrice - openPrice) * quantity;
-
-    const title = `${triggeredTier.emoji} ${symbol} is ${directionWord} ${triggeredTier.label}`;
+    const dollarChange = (currentPrice - openPrice) * position.quantity;
+    const title = `${triggeredTier.emoji} ${position.symbol} is ${directionWord} ${triggeredTier.label}`;
     const body = `${direction} ${absChange.toFixed(1)}% · Position ${directionWord} $${Math.abs(dollarChange).toFixed(2)}. Tap to analyze.`;
 
     const data: { [key: string]: string } = {
       type: "price_alert",
-      symbol,
+      symbol: position.symbol,
       change: change.toFixed(2),
       currentPrice: currentPrice.toFixed(2),
       dollarChange: dollarChange.toFixed(2),
@@ -199,12 +210,12 @@ async function checkUserPositions(user: User): Promise<void> {
 
     await sendPushNotification(oneSignalPlayerId, title, body, data);
     alertCooldown[cooldownKey] = Date.now();
-    console.log(`📲 Alert — ${userId}: ${symbol} ${direction}${absChange.toFixed(1)}%`);
+    console.log(`📲 Alert — ${userId}: ${position.symbol} ${direction}${absChange.toFixed(1)}%`);
   }
 }
 
 // ─── Main job ─────────────────────────────────────────────────────────────
-async function runPriceAlertJob(): Promise<void> {
+export async function runPriceAlertJob(): Promise<void> {
   console.log(`🔍 [${new Date().toISOString()}] Running price alert check...`);
   const users = await getAllUsers();
   if (!users.length) { console.log("⚠️ No users found."); return; }
@@ -219,5 +230,3 @@ export function startPriceAlertService(): void {
   });
   console.log("🚀 TYGER Price Alert Service — checks every 30min during market hours");
 }
-
-export { runPriceAlertJob };  // ← make sure this line is there

@@ -13,6 +13,7 @@ const SNAPTRADE_CLIENT_ID = process.env.SNAPTRADE_CLIENT_ID as string;
 const SNAPTRADE_CONSUMER_KEY = process.env.SNAPTRADE_CONSUMER_KEY as string;
 const ONESIGNAL_APP_ID = process.env.ONESIGNAL_APP_ID as string;
 const ONESIGNAL_API_KEY = process.env.ONESIGNAL_API_KEY as string;
+const POLYGON_API_KEY = process.env.POLYGON_API_KEY as string;
 
 // ─── Types ────────────────────────────────────────────────────────────────
 interface User {
@@ -28,19 +29,21 @@ interface Tier {
   emoji: string;
 }
 
-interface Position {
+interface SnaptradePosition {
   symbol: { symbol: string } | string;
-  price?: string | number;
-  currentPrice?: string | number;
-  openPrice?: string | number;
-  averagePurchasePrice?: string | number;
   quantity?: string | number;
   units?: string | number;
 }
 
+interface PolygonSnapshot {
+  ticker: string;
+  day: { o: number; c: number }; // open and current close
+  lastTrade?: { p: number };
+}
+
 // ─── Cooldown tracker ─────────────────────────────────────────────────────
 const alertCooldown: { [key: string]: number } = {};
-const COOLDOWN_MS = 60 * 60 * 1000;
+const COOLDOWN_MS = 60 * 60 * 1000; // 1 hour per symbol per tier
 
 const TIERS: Tier[] = [
   { percent: 3,  label: "3%",  emoji: "📊" },
@@ -61,8 +64,8 @@ async function getAllUsers(): Promise<User[]> {
   }));
 }
 
-// ─── Fetch positions from Snaptrade ───────────────────────────────────────
-async function getUserPositions(snaptradeUserId: string, userSecret: string): Promise<Position[]> {
+// ─── Get positions from Snaptrade ─────────────────────────────────────────
+async function getUserPositions(snaptradeUserId: string, userSecret: string): Promise<SnaptradePosition[]> {
   try {
     const res = await axios.get(`${SNAPTRADE_BASE}/accounts/${snaptradeUserId}/positions`, {
       params: { clientId: SNAPTRADE_CLIENT_ID, userSecret },
@@ -73,6 +76,29 @@ async function getUserPositions(snaptradeUserId: string, userSecret: string): Pr
     const message = err instanceof Error ? err.message : String(err);
     console.error(`❌ Failed to fetch positions:`, message);
     return [];
+  }
+}
+
+// ─── Get current + open prices from Polygon ───────────────────────────────
+async function getPolygonSnapshots(symbols: string[]): Promise<{ [symbol: string]: PolygonSnapshot }> {
+  if (!symbols.length) return {};
+  try {
+    const tickers = symbols.join(",");
+    const res = await axios.get(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers`, {
+      params: {
+        tickers,
+        apiKey: POLYGON_API_KEY,
+      },
+    });
+    const snapshots: { [symbol: string]: PolygonSnapshot } = {};
+    for (const ticker of res.data?.tickers || []) {
+      snapshots[ticker.ticker] = ticker;
+    }
+    return snapshots;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`❌ Polygon snapshot failed:`, message);
+    return {};
   }
 }
 
@@ -113,30 +139,49 @@ async function checkUserPositions(user: User): Promise<void> {
   const { userId, snaptradeUserId, snaptradeUserSecret, oneSignalPlayerId } = user;
   if (!oneSignalPlayerId) return;
 
+  // Step 1: get positions from Snaptrade (symbols + quantities)
   const positions = await getUserPositions(snaptradeUserId, snaptradeUserSecret);
   if (!positions.length) return;
 
-  for (const position of positions) {
-    const symbol = typeof position.symbol === "object" ? position.symbol.symbol : position.symbol;
-    const currentPrice = parseFloat(String(position.price ?? position.currentPrice ?? 0));
-    const openPrice = parseFloat(String(position.openPrice ?? position.averagePurchasePrice ?? 0));
+  // Step 2: extract symbols
+  const symbols = positions.map((p) =>
+    typeof p.symbol === "object" ? p.symbol.symbol : p.symbol
+  ).filter(Boolean).map((s) => s.toUpperCase());
 
-    if (!symbol || !currentPrice || !openPrice) continue;
+  if (!symbols.length) return;
+
+  // Step 3: get real-time prices from Polygon
+  const snapshots = await getPolygonSnapshots(symbols);
+  if (!Object.keys(snapshots).length) return;
+
+  // Step 4: check each position for price movement
+  for (const position of positions) {
+    const symbol = (typeof position.symbol === "object" ? position.symbol.symbol : position.symbol).toUpperCase();
+    const snapshot = snapshots[symbol];
+    if (!snapshot) continue;
+
+    const openPrice = snapshot.day?.o;
+    const currentPrice = snapshot.day?.c || snapshot.lastTrade?.p;
+
+    if (!openPrice || !currentPrice || openPrice === 0) continue;
 
     const change = ((currentPrice - openPrice) / openPrice) * 100;
     const absChange = Math.abs(change);
     const direction = change >= 0 ? "▲" : "▼";
     const directionWord = change >= 0 ? "up" : "down";
 
+    // Find highest triggered tier
     let triggeredTier: Tier | null = null;
     for (const tier of [...TIERS].reverse()) {
       if (absChange >= tier.percent) { triggeredTier = tier; break; }
     }
     if (!triggeredTier) continue;
 
+    // Check cooldown
     const cooldownKey = `${userId}_${symbol}_${triggeredTier.percent}`;
     if (alertCooldown[cooldownKey] && Date.now() - alertCooldown[cooldownKey] < COOLDOWN_MS) continue;
 
+    // Calculate dollar impact
     const quantity = parseFloat(String(position.quantity ?? position.units ?? 0));
     const dollarChange = (currentPrice - openPrice) * quantity;
 
@@ -174,3 +219,5 @@ export function startPriceAlertService(): void {
   });
   console.log("🚀 TYGER Price Alert Service — checks every 30min during market hours");
 }
+
+export { runPriceAlertJob };  // ← make sure this line is there

@@ -766,10 +766,67 @@ app.get("/debug/brokerageAuths", async (req, res) => {
  * /connect?fresh=1              # mobile deep link callback
  * Optional (dev only): ?json=1 when ALLOW_JSON=1
  */
+
+async function checkRevenueCatSubscription(rcUserId: string): Promise<boolean> {
+  try {
+    const response = await fetch(
+      `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}`,
+      {
+        headers: {
+          "Authorization": `Bearer ${process.env.REVENUECAT_SECRET_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+    if (!response.ok) return false;
+    const data: any = await response.json();
+    const entitlements = data?.subscriber?.entitlements ?? {};
+    const pro = entitlements["pro"];
+    return pro?.expires_date == null || new Date(pro.expires_date) > new Date();
+  } catch (e) {
+    console.error("RevenueCat check failed:", e);
+    return false; // fail closed — deny if can't verify
+  }
+}
+
 async function handleConnect(req: express.Request, res: express.Response) {
   try {
     const snaptrade = mkClient();
     const fresh = String(req.query.fresh || "") === "1";
+
+    // ✅ SUBSCRIPTION GATE — add this block
+    const rcUserId = req.query.rcUserId as string;
+    const existingUserId = req.query.userId as string;
+
+      // Only gate if this is a NEW broker link (fresh=1) and user already has one linked
+    if (fresh && existingUserId) {
+      // Check how many brokers this user already has
+      const existingSecret = await fetchUserSecretFromDB(existingUserId);
+      if (existingSecret) {
+        try {
+          const snapClient = mkClient();
+          const auths = await snapClient.connections.listBrokerageAuthorizations({
+            userId: existingUserId,
+            userSecret: existingSecret
+          });
+          const brokerCount = auths?.data?.length ?? 0;
+
+          if (brokerCount >= 1) {
+            // They already have a broker — check if they're pro
+            if (!rcUserId) {
+              return res.status(403).json({ error: "pro_required", message: "Upgrade to Pro to link multiple brokers." });
+            }
+            const isPro = await checkRevenueCatSubscription(rcUserId);
+            if (!isPro) {
+              return res.status(403).json({ error: "pro_required", message: "Upgrade to Pro to link multiple brokers." });
+            }
+          }
+        } catch (e) {
+          console.warn("Could not check broker count for gate:", e);
+          // fail open — let them through if we can't check
+        }
+      }
+    }
 
     let userId = (req.query.userId as string) || process.env.SNAPTRADE_USER_ID || "";
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";

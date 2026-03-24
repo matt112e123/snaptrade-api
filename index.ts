@@ -483,6 +483,88 @@ setInterval(() => {
   for (const [k, v] of USER_SECRETS) if (now > v.expiresAt) USER_SECRETS.delete(k);
 }, 60_000);
 
+
+// ── Retail flow signal helpers ──
+
+import crypto from 'crypto';
+
+function hashUserId(userId: string): string {
+  return crypto.createHash('sha256').update(userId + (process.env.SIGNAL_HASH_SALT || 'tyger-salt')).digest('hex').slice(0, 16);
+}
+
+function getMarketSession(): string {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
+  const totalMinutes = hour * 60 + minute;
+  // NYSE hours in UTC: 9:30 AM - 4:00 PM ET = 14:30 - 21:00 UTC
+  if (totalMinutes >= 870 && totalMinutes < 1260) return 'REGULAR';
+  if (totalMinutes >= 540 && totalMinutes < 870) return 'PRE_MARKET';
+  return 'EXTENDED';
+}
+
+function getSector(symbol: string): string {
+  const SECTORS: Record<string, string> = {
+    'AAPL': 'Tech', 'MSFT': 'Tech', 'GOOGL': 'Tech', 'META': 'Tech', 'NVDA': 'Tech',
+    'AMZN': 'Tech', 'TSLA': 'Tech', 'AMD': 'Tech', 'INTC': 'Tech', 'CRM': 'Tech',
+    'JPM': 'Finance', 'BAC': 'Finance', 'GS': 'Finance', 'MS': 'Finance', 'WFC': 'Finance',
+    'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy', 'SLB': 'Energy',
+    'JNJ': 'Healthcare', 'PFE': 'Healthcare', 'UNH': 'Healthcare', 'MRNA': 'Healthcare',
+    'SPY': 'ETF', 'QQQ': 'ETF', 'IWM': 'ETF', 'GLD': 'ETF', 'TLT': 'ETF',
+    'BTC': 'Crypto', 'ETH': 'Crypto', 'SOL': 'Crypto', 'DOGE': 'Crypto',
+  };
+  return SECTORS[symbol.toUpperCase()] || 'Other';
+}
+
+function getBrokerCountry(brokerName: string): string {
+  const COUNTRIES: Record<string, string> = {
+    'ROBINHOOD': 'US', 'SCHWAB': 'US', 'FIDELITY': 'US', 'ETRADE': 'US',
+    'TRADESTATION': 'US', 'TASTYTRADE': 'US', 'ALPACA': 'US', 'WEBULL': 'US',
+    'QUESTRADE': 'CA', 'WEALTHSIMPLE': 'CA',
+    'AJ_BELL': 'UK', 'TRADING_212': 'UK',
+    'INTERACTIVE_BROKERS': 'GLOBAL',
+    'COINBASE': 'US', 'KRAKEN': 'GLOBAL', 'BINANCE': 'GLOBAL',
+    'ZERODHA': 'IN', 'UPSTOX': 'IN',
+    'COMMSEC': 'AU', 'STAKE_AUS': 'AU',
+  };
+  return COUNTRIES[brokerName.toUpperCase()] || 'UNKNOWN';
+}
+
+async function captureTradeIntent(signal: {
+  userId: string;
+  symbol: string;
+  action: string;
+  orderType: string;
+  quantity: number;
+  limitPrice?: number | null;
+  brokerName: string;
+  isCrypto: boolean;
+}) {
+  try {
+    await pool.query(`
+      INSERT INTO retail_flow_signals 
+        (anonymous_id, symbol, action, order_type, quantity, limit_price, broker_country, broker_name, is_crypto, sector, market_session)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `, [
+      hashUserId(signal.userId),
+      signal.symbol.toUpperCase(),
+      signal.action.toUpperCase(),
+      signal.orderType,
+      signal.quantity,
+      signal.limitPrice || null,
+      getBrokerCountry(signal.brokerName),
+      signal.brokerName.toUpperCase(),
+      signal.isCrypto,
+      getSector(signal.symbol),
+      getMarketSession()
+    ]);
+    console.log(`📊 Signal captured: ${signal.action} ${signal.symbol} (anon)`);
+  } catch (err) {
+    // Never block a trade because of signal capture failure
+    console.warn('⚠️ Signal capture failed (non-blocking):', err);
+  }
+}
+
 // ── Rate limit wrapper with exponential backoff ──
 async function snaptradeCall<T>(fn: () => Promise<T>, retries = 4): Promise<T> {
   for (let i = 0; i < retries; i++) {
@@ -1544,6 +1626,18 @@ const order = await (snaptrade as any).cryptoTrading.placeOrder(cryptoPayload);
     console.log("FINAL SnapTrade order payload:", JSON.stringify(params));
 
     // SUBMIT THIS OBJECT ONLY!
+// 📊 Capture intent BEFORE submitting to SnapTrade
+await captureTradeIntent({
+  userId,
+  symbol,
+  action,
+  orderType,
+  quantity: Number(quantity),
+  limitPrice: limitPrice || null,
+  brokerName: broker || 'UNKNOWN',
+  isCrypto: isCryptoBroker(broker)
+});
+
 const order = await snaptrade.trading.placeForceOrder({
     userId,
     userSecret,
@@ -1554,7 +1648,8 @@ const order = await snaptrade.trading.placeForceOrder({
     time_in_force: "Day",
     units: Number(quantity),
     ...(orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null ? { price: Number(limitPrice) } : {})
-});    res.json(order.data);
+});
+res.json(order.data);
 
  } catch (err: any) {
     // 🔎 Add more raw error logging!
@@ -2127,6 +2222,211 @@ app.get('/account/capabilities', async (req, res) => {
 
   } catch (err: any) {
     console.error('❌ Capabilities error:', err);
+    res.status(500).json(errPayload(err));
+  }
+});
+
+
+// ── Enterprise: API key auth middleware ──
+async function authenticateEnterpriseKey(req: any, res: any, next: any) {
+  const key = req.headers['x-api-key'];
+  if (!key) return res.status(401).json({ error: 'Missing API key' });
+  try {
+    const result = await pool.query(
+      'SELECT * FROM enterprise_clients WHERE api_key = $1 AND active = TRUE',
+      [key]
+    );
+    if (!result.rows[0]) return res.status(403).json({ error: 'Invalid API key' });
+    req.enterpriseClient = result.rows[0];
+    next();
+  } catch (err) {
+    res.status(500).json({ error: 'Auth check failed' });
+  }
+}
+
+// ── TYGER PULSE: Buy/sell pressure for a symbol ──
+app.get('/pulse/flow/:symbol', authenticateEnterpriseKey, async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    const minutes = Math.min(Number(req.query.minutes || 60), 1440);
+
+    const result = await pool.query(`
+      SELECT 
+        action,
+        COUNT(*) as order_count,
+        SUM(quantity) as total_quantity,
+        AVG(limit_price) FILTER (WHERE limit_price IS NOT NULL) as avg_limit_price,
+        broker_country,
+        COUNT(DISTINCT anonymous_id) as unique_traders
+      FROM retail_flow_signals
+      WHERE symbol = $1 
+        AND timestamp > NOW() - ($2 || ' minutes')::INTERVAL
+      GROUP BY action, broker_country
+      ORDER BY order_count DESC
+    `, [symbol, minutes]);
+
+    const buys = result.rows.filter(r => r.action === 'BUY');
+    const sells = result.rows.filter(r => r.action === 'SELL');
+    const totalBuys = buys.reduce((s, r) => s + Number(r.order_count), 0);
+    const totalSells = sells.reduce((s, r) => s + Number(r.order_count), 0);
+    const total = totalBuys + totalSells;
+
+    const sentiment = totalBuys > totalSells * 1.5 ? 'STRONGLY_BULLISH'
+      : totalBuys > totalSells ? 'BULLISH'
+      : totalSells > totalBuys * 1.5 ? 'STRONGLY_BEARISH'
+      : totalSells > totalBuys ? 'BEARISH'
+      : 'NEUTRAL';
+
+    res.json({
+      symbol,
+      window_minutes: minutes,
+      buy_pressure: total > 0 ? Number((totalBuys / total * 100).toFixed(1)) : 50,
+      sell_pressure: total > 0 ? Number((totalSells / total * 100).toFixed(1)) : 50,
+      total_signals: total,
+      unique_traders: result.rows.reduce((s, r) => s + Number(r.unique_traders), 0),
+      by_country: result.rows,
+      sentiment,
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+// ── TYGER PULSE: Trending symbols right now ──
+app.get('/pulse/trending', authenticateEnterpriseKey, async (req, res) => {
+  try {
+    const minutes = Math.min(Number(req.query.minutes || 30), 1440);
+    const country = req.query.country as string;
+
+    const result = await pool.query(`
+      SELECT 
+        symbol,
+        COUNT(*) as signal_count,
+        SUM(CASE WHEN action = 'BUY' THEN 1 ELSE 0 END) as buys,
+        SUM(CASE WHEN action = 'SELL' THEN 1 ELSE 0 END) as sells,
+        COUNT(DISTINCT broker_country) as countries_active,
+        COUNT(DISTINCT anonymous_id) as unique_traders
+      FROM retail_flow_signals
+      WHERE timestamp > NOW() - ($1 || ' minutes')::INTERVAL
+        ${country ? `AND broker_country = '${country.toUpperCase()}'` : ''}
+      GROUP BY symbol
+      ORDER BY signal_count DESC
+      LIMIT 20
+    `, [minutes]);
+
+    res.json({
+      window_minutes: minutes,
+      trending: result.rows.map(r => ({
+        symbol: r.symbol,
+        signal_count: Number(r.signal_count),
+        buys: Number(r.buys),
+        sells: Number(r.sells),
+        buy_ratio: Number(((Number(r.buys) / (Number(r.buys) + Number(r.sells))) * 100).toFixed(1)),
+        countries_active: Number(r.countries_active),
+        unique_traders: Number(r.unique_traders)
+      })),
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+// ── TYGER PULSE: Sector rotation ──
+app.get('/pulse/sectors', authenticateEnterpriseKey, async (req, res) => {
+  try {
+    const hours = Math.min(Number(req.query.hours || 24), 168);
+
+    const result = await pool.query(`
+      SELECT 
+        sector,
+        COUNT(*) as signal_count,
+        SUM(CASE WHEN action = 'BUY' THEN 1 ELSE 0 END) as buys,
+        SUM(CASE WHEN action = 'SELL' THEN 1 ELSE 0 END) as sells,
+        COUNT(DISTINCT anonymous_id) as unique_traders,
+        COUNT(DISTINCT broker_country) as countries
+      FROM retail_flow_signals
+      WHERE timestamp > NOW() - ($1 || ' hours')::INTERVAL
+        AND sector IS NOT NULL
+      GROUP BY sector
+      ORDER BY signal_count DESC
+    `, [hours]);
+
+    res.json({
+      window_hours: hours,
+      sectors: result.rows.map(r => ({
+        sector: r.sector,
+        signal_count: Number(r.signal_count),
+        buys: Number(r.buys),
+        sells: Number(r.sells),
+        buy_ratio: Number(((Number(r.buys) / (Number(r.buys) + Number(r.sells))) * 100).toFixed(1)),
+        unique_traders: Number(r.unique_traders),
+        countries: Number(r.countries)
+      })),
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+// ── TYGER PULSE: Global retail heatmap ──
+app.get('/pulse/global', authenticateEnterpriseKey, async (req, res) => {
+  try {
+    const minutes = Math.min(Number(req.query.minutes || 60), 1440);
+
+    const result = await pool.query(`
+      SELECT 
+        broker_country,
+        COUNT(*) as signal_count,
+        SUM(CASE WHEN action = 'BUY' THEN 1 ELSE 0 END) as buys,
+        SUM(CASE WHEN action = 'SELL' THEN 1 ELSE 0 END) as sells,
+        COUNT(DISTINCT anonymous_id) as unique_traders,
+        COUNT(DISTINCT symbol) as symbols_traded
+      FROM retail_flow_signals
+      WHERE timestamp > NOW() - ($1 || ' minutes')::INTERVAL
+        AND broker_country != 'UNKNOWN'
+      GROUP BY broker_country
+      ORDER BY signal_count DESC
+    `, [minutes]);
+
+    res.json({
+      window_minutes: minutes,
+      countries: result.rows.map(r => ({
+        country: r.broker_country,
+        signal_count: Number(r.signal_count),
+        buys: Number(r.buys),
+        sells: Number(r.sells),
+        sentiment: Number(r.buys) > Number(r.sells) ? 'BULLISH' : 'BEARISH',
+        unique_traders: Number(r.unique_traders),
+        symbols_traded: Number(r.symbols_traded)
+      })),
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
+// ── TYGER PULSE: Health check (no auth needed) ──
+app.get('/pulse/status', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) as total_signals,
+        COUNT(DISTINCT symbol) as unique_symbols,
+        COUNT(DISTINCT broker_country) as countries,
+        MAX(timestamp) as last_signal
+      FROM retail_flow_signals
+      WHERE timestamp > NOW() - INTERVAL '24 hours'
+    `);
+    res.json({
+      status: 'live',
+      last_24h: result.rows[0],
+      timestamp: new Date().toISOString()
+    });
+  } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
 });

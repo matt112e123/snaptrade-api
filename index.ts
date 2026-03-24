@@ -933,11 +933,20 @@ async function handleConnect(req: express.Request, res: express.Response) {
     let userSecret = (req.query.userSecret as string) || process.env.SNAPTRADE_USER_SECRET || "";
 
     // ✅ CHANGE 1: Only register NEW users, existing users fall through
-    if (fresh || !userId || !userSecret) {
-      userId = `dev-${Date.now()}`;
-      const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
-      userSecret = reg?.data?.userSecret ?? "";
+    if (!userId) {
+  // Truly new user — register them
+  userId = `dev-${Date.now()}`;
+  const reg = await snaptrade.authentication.registerSnapTradeUser({ userId });
+  userSecret = reg?.data?.userSecret ?? "";
+} else if (!userSecret) {
+  // Existing user reconnecting — fetch their secret from DB
+  userSecret = await fetchUserSecretFromDB(userId);
+  if (!userSecret) {
+    return res.status(400).json({ error: "Could not find userSecret for existing userId" });
+  }
 }
+// Always refresh the in-memory cache so subsequent calls have it
+putSecret(userId, userSecret);
 
     putSecret(userId, userSecret);
 
@@ -1450,8 +1459,10 @@ async function ensureTradingEnabled(
         const candidate = loginResp?.data?.redirectURI || loginResp?.data?.redirectUri ||
                           loginResp?.data?.loginRedirectURI || loginResp?.data?.loginRedirectUri ||
                           (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-        if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-      } catch (e: any) {
+if (candidate) {
+  const reauthUrl = `https://snaptrade-api-da44.onrender.com/connect?connectionType=trade&userId=${userId}`;
+  return { ok: false, reason: "trade_not_enabled", reauthUrl };
+}      } catch (e: any) {
         console.warn("Could not build reauth link for matched auth:", (e && e.message) || e);
       }
       return { ok: false, reason: "trade_not_enabled" };
@@ -1484,8 +1495,10 @@ async function ensureTradingEnabled(
         loginResp?.data?.loginRedirectURI ||
         loginResp?.data?.loginRedirectUri ||
         (typeof loginResp?.data === "string" ? loginResp.data : undefined);
-      if (candidate) return { ok: false, reason: "trade_not_enabled", reauthUrl: candidate };
-    } catch (e) {
+if (candidate) {
+  const reauthUrl = `https://snaptrade-api-da44.onrender.com/connect?connectionType=trade&userId=${userId}&reconnect=${reconnectId}`;
+  return { ok: false, reason: "trade_not_enabled", reauthUrl };
+}    } catch (e) {
       console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
     }
 
@@ -1559,13 +1572,15 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!app.post("/trade/
 
     const snaptrade = mkClient();
 
-    let check, tries = 0, maxTries = 15;
-    do {
-      check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
-      if (check.ok) break;
-      await new Promise(r => setTimeout(r, 2000));
-      tries++;
-    } while (!check.ok && tries < maxTries);
+   const check = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+if (!check.ok) {
+  const payload: any = {
+    error: "Trading not enabled for this account",
+    reason: check.reason || "unknown"
+  };
+  if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
+  return res.status(403).json(payload);
+}
 
     if (!check.ok) {
       const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
@@ -2177,48 +2192,81 @@ app.get('/account/capabilities', async (req, res) => {
 
     // Static capability map based on SnapTrade's brokerage support matrix
     const BROKER_CAPS: Record<string, any> = {
-      'ROBINHOOD':          { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
-      'ALPACA':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
-      'QUESTRADE':          { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
-      'WEALTHSIMPLE':       { trading: true,  options: false, crypto: true,  fractional: false, extendedHours: false },
-      'INTERACTIVE_BROKERS':{ trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
-      'COINBASE':           { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
-      'KRAKEN':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
-      'BINANCE':            { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
-      'TRADIER':            { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
-      'TASTYTRADE':         { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
-      'WEBULL':             { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
-      'SCHWAB':             { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: false },
-      'FIDELITY':           { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: false },
-      'ETRADE':             { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
-      'TRADESTATION':       { trading: true,  options: true,  crypto: true,  fractional: false, extendedHours: true  },
-      'MOOMOO':             { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
-      'PUBLIC':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: false },
-      'TRADING_212':        { trading: true,  options: false, crypto: false, fractional: true,  extendedHours: false },
-      'EMPOWER':            { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
-      'VANGUARD':           { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
-    };
+  // ── Trading-capable (per SnapTrade docs) ──
+  'ALPACA':        { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+  'BINANCE':       { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+  'COINBASE':      { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+  'SCHWAB':        { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: false },
+  'ETRADE':        { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
+  'KRAKEN':        { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+  'MOOMOO':        { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
+  'STAKE_AUS':     { trading: true,  options: false, crypto: false, fractional: false, extendedHours: false },
+  'PUBLIC':        { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: false },
+  'QUESTRADE':     { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
+  'TASTYTRADE':    { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
+  'TRADIER':       { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
+  'WEALTHSIMPLE':  { trading: true,  options: false, crypto: true,  fractional: false, extendedHours: false },
+  'TRADING_212':   { trading: true,  options: false, crypto: false, fractional: true,  extendedHours: false },
+  'WEBULL':        { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
+  'WEBULL_US':     { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
+  'WEBULL_CA':     { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
 
-    // Check trading enabled via existing helper
-    const tradingCheck = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+  // ── Read-only only (trading: false = never tradeable via SnapTrade) ──
+  'ROBINHOOD':           { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'FIDELITY':            { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'VANGUARD':            { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'VANGUARD_US':         { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'EMPOWER':             { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'INTERACTIVE_BROKERS': { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'TRADESTATION':        { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'CHASE':               { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'JPMORGAN':            { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'AJ_BELL':             { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'BUX':                 { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'COMMSEC':             { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'UPSTOX':              { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'WELLS_FARGO':         { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'WELLSFARGO':          { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+  'ZERODHA':             { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+};
 
-    const caps = BROKER_CAPS[brokerSlug] || {
-      trading: tradingCheck.ok,
-      options: false,
-      crypto: false,
-      fractional: false,
-      extendedHours: false
-    };
+// Short-circuit for known read-only brokers — no API call needed
+const READ_ONLY_BROKERS = new Set([
+  'ROBINHOOD', 'FIDELITY', 'VANGUARD', 'VANGUARD_US', 'EMPOWER',
+  'INTERACTIVE_BROKERS', 'TRADESTATION', 'CHASE', 'JPMORGAN',
+  'AJ_BELL', 'BUX', 'COMMSEC', 'UPSTOX', 'WELLS_FARGO',
+  'WELLSFARGO', 'ZERODHA'
+]);
 
-    res.json({
-      accountId,
-      brokerName: brokerSlug,
-      capabilities: {
-        ...caps,
-        trading: tradingCheck.ok, // always use live check for trading
-      },
-      tradingReauthUrl: tradingCheck.reauthUrl || null
-    });
+if (READ_ONLY_BROKERS.has(brokerSlug)) {
+  return res.json({
+    accountId,
+    brokerName: brokerSlug,
+    capabilities: BROKER_CAPS[brokerSlug],
+    tradingReauthUrl: null
+  });
+}
+
+// Only call ensureTradingEnabled for brokers that actually support trading
+const tradingCheck = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+
+const caps = BROKER_CAPS[brokerSlug] || {
+  trading: tradingCheck.ok,
+  options: false,
+  crypto: false,
+  fractional: false,
+  extendedHours: false
+};
+
+res.json({
+  accountId,
+  brokerName: brokerSlug,
+  capabilities: {
+    ...caps,
+    trading: tradingCheck.ok, // always use live check, never trust static map alone
+  },
+  tradingReauthUrl: tradingCheck.reauthUrl || null
+});
 
   } catch (err: any) {
     console.error('❌ Capabilities error:', err);

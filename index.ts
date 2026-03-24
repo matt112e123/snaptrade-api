@@ -483,6 +483,25 @@ setInterval(() => {
   for (const [k, v] of USER_SECRETS) if (now > v.expiresAt) USER_SECRETS.delete(k);
 }, 60_000);
 
+// ── Rate limit wrapper with exponential backoff ──
+async function snaptradeCall<T>(fn: () => Promise<T>, retries = 4): Promise<T> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const status = err?.response?.status;
+      if (status === 429) {
+        const backoff = Math.pow(2, i) * 1000 + Math.random() * 500;
+        console.warn(`⚠️ Rate limited by SnapTrade. Retry ${i + 1}/${retries} in ${Math.round(backoff)}ms`);
+        await new Promise(r => setTimeout(r, backoff));
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Max retries exceeded after rate limiting');
+}
+
 /* ------------------------------ app ------------------------------ */
 
 const app = express();
@@ -1775,50 +1794,107 @@ app.use("/webhook/snaptrade", (req, res, next) => {
 });
 
 app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
+  // Respond immediately — never make SnapTrade wait
+  res.status(200).send("ok");
+
   try {
     const event = req.body;
+    console.log(`📦 SnapTrade webhook: ${event.eventType} for user ${event.userId}`);
 
-    console.log("📦 Incoming webhook:", event);
+    const userId = event.userId;
+    if (!userId) return;
 
-    // Respond immediately to SnapTrade to avoid retries
-    res.status(200).send("ok");
-
-    // Optional: handle real events with userId/userSecret asynchronously
- const userId = event.userId;
-if (userId) {
-  const userSecret = event.userSecret || getSecret(userId) || await fetchUserSecretFromDB(userId);
-  if (userSecret) {
-    // Wait for sync before saving
-    let summary;
-let tries = 0;
-do {
-  summary = await fetchAndSaveUserSummary(userId, userSecret);
-  tries++;
-  if (!summary.syncing) break;
-  if (tries > 30) {
-    console.warn("⚠️ Max tries reached while waiting for sync, saving anyway");
-    break;
-  }
-  await new Promise(r => setTimeout(r, 2000));
-} while (true);
-
-await saveSnaptradeUser(userId, userSecret, summary);
-
-    if (summary.accounts.length) {
-      console.log(`✅ Webhook processed: saved summary for ${userId}`);
-    } else {
-      console.log(`⚠️ Webhook processed but accounts empty for ${userId}`);
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+    if (!userSecret) {
+      console.warn(`⚠️ No secret found for webhook user ${userId}`);
+      return;
     }
-  }
-}
 
+    switch (event.eventType) {
 
+      case 'ACCOUNT_HOLDINGS_UPDATED':
+      case 'CONNECTION_ADDED':
+      case 'CONNECTION_FIXED':
+      case 'NEW_ACCOUNT_AVAILABLE':
+      case 'ACCOUNT_TRANSACTIONS_UPDATED':
+      case 'ACCOUNT_TRANSACTIONS_INITIAL_UPDATE': {
+        console.log(`🔄 Refreshing portfolio for ${userId} due to ${event.eventType}`);
+        let tries = 0;
+        let summary: any;
+        do {
+          summary = await fetchAndSaveUserSummary(userId, userSecret);
+          tries++;
+          if (!summary.syncing) break;
+          if (tries > 15) {
+            console.warn(`⚠️ Sync timeout for ${userId}, saving partial data`);
+            break;
+          }
+          await new Promise(r => setTimeout(r, 3000));
+        } while (true);
+        await saveSnaptradeUser(userId, userSecret, summary);
+        console.log(`✅ Portfolio refreshed for ${userId} — ${summary.positions.length} positions`);
+
+        // Send push notification if holdings changed
+        await sendPortfolioUpdateNotification(userId, summary);
+        break;
+      }
+
+      case 'CONNECTION_BROKEN': {
+        console.warn(`🔴 Connection broken for ${userId}`);
+        await sendConnectionBrokenNotification(userId);
+        break;
+      }
+
+      case 'CONNECTION_DELETED':
+      case 'ACCOUNT_REMOVED': {
+        console.log(`🗑️ Connection/account removed for ${userId}`);
+        // Refresh to get updated account list
+        const summary = await fetchAndSaveUserSummary(userId, userSecret);
+        await saveSnaptradeUser(userId, userSecret, summary);
+        break;
+      }
+
+      default:
+        console.log(`ℹ️ Unhandled webhook event: ${event.eventType}`);
+    }
 
   } catch (err: any) {
     console.error("❌ Webhook processing error:", err);
-    res.status(500).send("error");
   }
 });
+
+// Push notification helpers (extend later)
+async function sendPortfolioUpdateNotification(userId: string, summary: any) {
+  try {
+    // Look up device token from your users DB
+    const result = await pool.query(
+      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
+      [userId]
+    );
+    const token = result.rows[0]?.device_token;
+    if (!token) return;
+
+    // Use your existing apnProvider if available
+    console.log(`📱 Would send push to ${userId}: portfolio updated`);
+    // TODO: wire to your apnProvider from auth backend
+  } catch (e) {
+    console.warn('Could not send portfolio push:', e);
+  }
+}
+
+async function sendConnectionBrokenNotification(userId: string) {
+  try {
+    const result = await pool.query(
+      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
+      [userId]
+    );
+    const token = result.rows[0]?.device_token;
+    if (!token) return;
+    console.log(`📱 Would send push to ${userId}: broker connection broken`);
+  } catch (e) {
+    console.warn('Could not send connection broken push:', e);
+  }
+}
 
 app.get('/user/secret', async (req, res) => {
   const userId = String(req.query.userId || '');
@@ -1837,6 +1913,222 @@ app.get('/user/secret', async (req, res) => {
 
   // Don't ever log the secret in prod!
   return res.json({ userSecret });
+});
+
+
+// ── Order history (last 24hrs from SnapTrade + full history from DB) ──
+app.get('/orders/recent', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const accountId = String(req.query.accountId || '');
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: 'Missing userId or userSecret' });
+    }
+    if (!accountId) {
+      return res.status(400).json({ error: 'Missing accountId' });
+    }
+
+    const snaptrade = mkClient();
+
+    // Get recent orders from SnapTrade (last 24hrs, realtime)
+    let recentOrders: any[] = [];
+    try {
+      const resp = await snaptradeCall(() =>
+        snaptrade.accountInformation.getUserAccountRecentOrders({
+          accountId,
+          userId,
+          userSecret,
+          onlyExecuted: false // show pending too
+        })
+      );
+      recentOrders = resp?.data?.orders || [];
+    } catch (err: any) {
+      console.warn('Could not fetch recent orders from SnapTrade:', errPayload(err));
+    }
+
+    // Get full history from your DB
+    const dbResult = await pool.query(
+      `SELECT 
+        brokerage_order_id, symbol, action, quantity, price, 
+        execution_time, raw, created_at
+       FROM snaptrade_transactions 
+       WHERE user_id = $1 AND account_id = $2
+       ORDER BY execution_time DESC NULLS LAST
+       LIMIT 100`,
+      [userId, accountId]
+    );
+
+    // Merge: SnapTrade recent orders take priority (most fresh)
+    const normalizeOrder = (o: any) => ({
+      orderId: o.brokerage_order_id || o.brokerageOrderId,
+      symbol: o.universal_symbol?.symbol || o.symbol?.symbol || o.symbol || 'UNKNOWN',
+      action: o.action,
+      status: o.status || 'EXECUTED',
+      quantity: o.total_quantity || o.filled_quantity || o.quantity,
+      filledQuantity: o.filled_quantity,
+      price: o.execution_price || o.limit_price,
+      orderType: o.order_type,
+      timePlaced: o.time_placed || o.time_executed,
+      timeExecuted: o.time_executed,
+      source: 'live'
+    });
+
+    const normalizeDBOrder = (row: any) => ({
+      orderId: row.brokerage_order_id,
+      symbol: row.symbol,
+      action: row.action,
+      status: 'EXECUTED',
+      quantity: row.quantity,
+      filledQuantity: row.quantity,
+      price: row.price,
+      orderType: null,
+      timePlaced: row.execution_time || row.created_at,
+      timeExecuted: row.execution_time,
+      source: 'history'
+    });
+
+    // Deduplicate by orderId
+    const liveIds = new Set(recentOrders.map(o => o.brokerage_order_id));
+    const dbOrders = dbResult.rows
+      .filter(row => !liveIds.has(row.brokerage_order_id))
+      .map(normalizeDBOrder);
+
+    const allOrders = [
+      ...recentOrders.map(normalizeOrder),
+      ...dbOrders
+    ].sort((a, b) => {
+      const ta = new Date(a.timePlaced || 0).getTime();
+      const tb = new Date(b.timePlaced || 0).getTime();
+      return tb - ta;
+    });
+
+    res.json({ orders: allOrders, total: allOrders.length });
+
+  } catch (err: any) {
+    console.error('❌ Order history error:', err);
+    res.status(500).json(errPayload(err));
+  }
+});
+
+
+// ── Cancel order ──
+app.post('/orders/cancel', async (req, res) => {
+  try {
+    const { userId, accountId, brokerageOrderId } = req.body;
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+
+    if (!userId || !userSecret || !accountId || !brokerageOrderId) {
+      return res.status(400).json({ error: 'Missing userId, accountId or brokerageOrderId' });
+    }
+
+    const snaptrade = mkClient();
+
+    const result = await snaptradeCall(() =>
+      snaptrade.trading.cancelOrder({
+        accountId,
+        userId,
+        userSecret,
+        brokerage_order_id: brokerageOrderId
+      })
+    );
+
+    console.log(`✅ Order ${brokerageOrderId} cancelled for ${userId}`);
+    res.json({ success: true, result: result.data });
+
+  } catch (err: any) {
+    console.error('❌ Cancel order error:', err);
+    res.status(500).json(errPayload(err));
+  }
+});
+
+// ── Broker capabilities ──
+app.get('/account/capabilities', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    const accountId = String(req.query.accountId || '');
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+
+    if (!userId || !userSecret || !accountId) {
+      return res.status(400).json({ error: 'Missing userId or accountId' });
+    }
+
+    const snaptrade = mkClient();
+
+    // Get account details
+    const accountsResp = await snaptradeCall(() =>
+      snaptrade.accountInformation.listUserAccounts({ userId, userSecret })
+    );
+    const accounts: any[] = accountsResp?.data || [];
+    const account = accounts.find(a =>
+      a.id === accountId || a.accountId === accountId ||
+      a.number === accountId || a.guid === accountId
+    );
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    // Get broker slug
+    const brokerSlug = (
+      account?.broker ||
+      account?.broker_slug ||
+      account?.brokerage?.slug ||
+      account?.brokerage?.name ||
+      account?.provider ||
+      'UNKNOWN'
+    ).toUpperCase();
+
+    // Static capability map based on SnapTrade's brokerage support matrix
+    const BROKER_CAPS: Record<string, any> = {
+      'ROBINHOOD':          { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
+      'ALPACA':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+      'QUESTRADE':          { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
+      'WEALTHSIMPLE':       { trading: true,  options: false, crypto: true,  fractional: false, extendedHours: false },
+      'INTERACTIVE_BROKERS':{ trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
+      'COINBASE':           { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+      'KRAKEN':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+      'BINANCE':            { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: true  },
+      'TRADIER':            { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
+      'TASTYTRADE':         { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: false },
+      'WEBULL':             { trading: true,  options: true,  crypto: true,  fractional: true,  extendedHours: true  },
+      'SCHWAB':             { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: false },
+      'FIDELITY':           { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: false },
+      'ETRADE':             { trading: true,  options: true,  crypto: false, fractional: false, extendedHours: true  },
+      'TRADESTATION':       { trading: true,  options: true,  crypto: true,  fractional: false, extendedHours: true  },
+      'MOOMOO':             { trading: true,  options: true,  crypto: false, fractional: true,  extendedHours: true  },
+      'PUBLIC':             { trading: true,  options: false, crypto: true,  fractional: true,  extendedHours: false },
+      'TRADING_212':        { trading: true,  options: false, crypto: false, fractional: true,  extendedHours: false },
+      'EMPOWER':            { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+      'VANGUARD':           { trading: false, options: false, crypto: false, fractional: false, extendedHours: false },
+    };
+
+    // Check trading enabled via existing helper
+    const tradingCheck = await ensureTradingEnabled(snaptrade, userId, userSecret, accountId);
+
+    const caps = BROKER_CAPS[brokerSlug] || {
+      trading: tradingCheck.ok,
+      options: false,
+      crypto: false,
+      fractional: false,
+      extendedHours: false
+    };
+
+    res.json({
+      accountId,
+      brokerName: brokerSlug,
+      capabilities: {
+        ...caps,
+        trading: tradingCheck.ok, // always use live check for trading
+      },
+      tradingReauthUrl: tradingCheck.reauthUrl || null
+    });
+
+  } catch (err: any) {
+    console.error('❌ Capabilities error:', err);
+    res.status(500).json(errPayload(err));
+  }
 });
 
 /* ---------------------------- 404 last ---------------------------- */

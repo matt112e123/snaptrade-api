@@ -60,6 +60,27 @@ async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHol
   }
 }
 
+async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
+  if (!positions.length) return;
+  try {
+    // Clear old holdings for this user
+    await pool.query('DELETE FROM user_holdings WHERE user_id = $1', [userId]);
+    // Insert fresh ones
+    for (const pos of positions) {
+      if (!pos.symbol || pos.symbol === 'UNKNOWN') continue;
+      await pool.query(
+        `INSERT INTO user_holdings (user_id, ticker, is_public)
+         VALUES ($1, $2, TRUE)
+         ON CONFLICT DO NOTHING`,
+        [userId, pos.symbol.toUpperCase()]
+      );
+    }
+    console.log(`✅ Synced ${positions.length} holdings to user_holdings for ${userId}`);
+  } catch (err) {
+    console.error('❌ Failed to sync user_holdings:', err);
+  }
+}
+
 
 // Persist activities and upsert when brokerage_order_id exists
 async function saveActivitiesToDB(userId: string, accountId: string, activities: any[] = []) {
@@ -314,6 +335,7 @@ const summary = {
 
   // Save locally and to DB via your existing helper
   await saveSnaptradeUser(userId, userSecret, summary);
+  await syncHoldingsToUserHoldings(userId, outPositions);
   return summary;
 }
 
@@ -948,8 +970,6 @@ async function handleConnect(req: express.Request, res: express.Response) {
 // Always refresh the in-memory cache so subsequent calls have it
 putSecret(userId, userSecret);
 
-    putSecret(userId, userSecret);
-
     const mobileBase = requireEnv("SNAPTRADE_REDIRECT_URI");
     const webBase = process.env.SNAPTRADE_WEB_REDIRECT_URI || mobileBase;
 
@@ -1496,9 +1516,9 @@ if (candidate) {
         loginResp?.data?.loginRedirectUri ||
         (typeof loginResp?.data === "string" ? loginResp.data : undefined);
 if (candidate) {
-  const reauthUrl = `https://snaptrade-api-da44.onrender.com/connect?connectionType=trade&userId=${userId}&reconnect=${reconnectId}`;
+  const reauthUrl = `https://snaptrade-api-da44.onrender.com/connect?connectionType=trade&userId=${userId}`;
   return { ok: false, reason: "trade_not_enabled", reauthUrl };
-}    } catch (e) {
+}   } catch (e) {
       console.warn("ensureTradingEnabled: could not build generic upgrade link", e);
     }
 
@@ -1581,12 +1601,6 @@ if (!check.ok) {
   if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
   return res.status(403).json(payload);
 }
-
-    if (!check.ok) {
-      const payload: any = { error: "Trading not enabled for this account", reason: check.reason || "unknown" };
-      if (check.reauthUrl) payload.reauthUrl = check.reauthUrl;
-      return res.status(403).json(payload);
-    }
 
     // --- CRYPTO (NO CHANGE) ---
     const broker = await getAccountBroker(snaptrade, userId, userSecret, accountId);
@@ -1942,6 +1956,7 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
           await new Promise(r => setTimeout(r, 3000));
         } while (true);
         await saveSnaptradeUser(userId, userSecret, summary);
+        await syncHoldingsToUserHoldings(userId, summary.positions); 
         console.log(`✅ Portfolio refreshed for ${userId} — ${summary.positions.length} positions`);
 
         // Send push notification if holdings changed

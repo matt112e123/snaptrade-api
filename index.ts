@@ -1272,6 +1272,7 @@ const summary = {
 
     // 💾 Now: Save summary to DB
     await saveSnaptradeUser(userId, userSecret, summary);
+    await syncHoldingsToUserHoldings(userId, outPositions); 
 
     // ✅ Finally, respond!
     res.json(summary);

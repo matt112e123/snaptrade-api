@@ -61,6 +61,7 @@ async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHol
 }
 
 async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
+  console.log(`🔄 syncHoldingsToUserHoldings called for ${userId} with ${positions.length} positions`);
   if (!positions.length) return;
   try {
     const tickers = positions
@@ -72,11 +73,10 @@ async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
     const response = await fetch('https://apex-auth-backend.onrender.com/api/holdings/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_id: userId, tickers })
+      body: JSON.stringify({ snaptrade_user_id: userId, tickers }) // ← send snaptrade_user_id
     });
     const responseText = await response.text();
     console.log(`📦 holdings/sync response: ${response.status} ${responseText}`);
-    console.log(`✅ Synced ${tickers.length} holdings to main backend for ${userId}: ${tickers.join(', ')}`);
   } catch (err) {
     console.error('❌ Failed to sync holdings to main backend:', err);
   }

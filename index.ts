@@ -69,11 +69,13 @@ async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
 
     if (!tickers.length) return;
 
-    await fetch('https://apex-auth-backend.onrender.com/api/holdings/sync', {
+    const response = await fetch('https://apex-auth-backend.onrender.com/api/holdings/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_id: userId, tickers })
     });
+    const responseText = await response.text();
+    console.log(`📦 holdings/sync response: ${response.status} ${responseText}`);
     console.log(`✅ Synced ${tickers.length} holdings to main backend for ${userId}: ${tickers.join(', ')}`);
   } catch (err) {
     console.error('❌ Failed to sync holdings to main backend:', err);

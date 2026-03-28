@@ -68,6 +68,7 @@ async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
     // Insert fresh ones
     for (const pos of positions) {
       if (!pos.symbol || pos.symbol === 'UNKNOWN') continue;
+      if (UUID_RE.test(pos.symbol)) continue;
       await pool.query(
         `INSERT INTO user_holdings (user_id, ticker, is_public)
          VALUES ($1, $2, TRUE)

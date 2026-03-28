@@ -63,25 +63,22 @@ async function saveAccountHoldingsToDB(userId: string, accountId: string, rawHol
 async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
   if (!positions.length) return;
   try {
-    // Clear old holdings for this user
-    await pool.query('DELETE FROM user_holdings WHERE user_id = $1', [userId]);
-    // Insert fresh ones
-    for (const pos of positions) {
-      if (!pos.symbol || pos.symbol === 'UNKNOWN') continue;
-      if (UUID_RE.test(pos.symbol)) continue;
-      await pool.query(
-        `INSERT INTO user_holdings (user_id, ticker, is_public)
-         VALUES ($1, $2, TRUE)
-         ON CONFLICT DO NOTHING`,
-        [userId, pos.symbol.toUpperCase()]
-      );
-    }
-    console.log(`✅ Synced ${positions.length} holdings to user_holdings for ${userId}`);
+    const tickers = positions
+      .filter(p => p.symbol && p.symbol !== 'UNKNOWN' && !UUID_RE.test(p.symbol))
+      .map(p => p.symbol.toUpperCase());
+
+    if (!tickers.length) return;
+
+    await fetch('https://apex-auth-backend.onrender.com/api/holdings/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, tickers })
+    });
+    console.log(`✅ Synced ${tickers.length} holdings to main backend for ${userId}: ${tickers.join(', ')}`);
   } catch (err) {
-    console.error('❌ Failed to sync user_holdings:', err);
+    console.error('❌ Failed to sync holdings to main backend:', err);
   }
 }
-
 
 // Persist activities and upsert when brokerage_order_id exists
 async function saveActivitiesToDB(userId: string, accountId: string, activities: any[] = []) {

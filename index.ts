@@ -295,6 +295,8 @@ const h = await snaptrade.accountInformation.getUserHoldings({ userId, userSecre
     if (initDone === false) syncing = true;
   }
 
+const positionsValue = outPositions.reduce((sum: number, p: any) => sum + (p.value || 0), 0);
+
 const summary = {
   accounts: accounts.map((a: any, i: number) => {
     const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
@@ -324,15 +326,15 @@ const summary = {
     }
   }),
   totals: {
-      equity: Math.max(0, totalValue - totalCash),
-      cash: totalCash,
-      buyingPower: totalBP,
-    },
-    positions: outPositions,
-    activitiesByAccount,
-    holdingsByAccount,
-    syncing,
-  };
+    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
+    cash: totalCash,
+    buyingPower: totalBP,
+  },
+  positions: outPositions,
+  activitiesByAccount,
+  holdingsByAccount,
+  syncing,
+};
 
   // Save locally and to DB via your existing helper
   await saveSnaptradeUser(userId, userSecret, summary);
@@ -1235,7 +1237,9 @@ for (const p of explicitPositions) {
     }
     
     
-    // 💡 Build summary object FIRST!
+ // 💡 Build summary object FIRST!
+const positionsValue = outPositions.reduce((sum: number, p: any) => sum + (p.value || 0), 0);
+
 const summary = {
   accounts: accounts.map((a: any, i: number) => {
     const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
@@ -1265,22 +1269,22 @@ const summary = {
     }
   }),
   totals: {
-        equity: Math.max(0, totalValue - totalCash),
-        cash: totalCash,
-        buyingPower: totalBP,
-      },
-      positions: outPositions,
-      activitiesByAccount, 
-      holdingsByAccount, // full raw h.data per account
-      syncing,
-    };
+    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
+    cash: totalCash,
+    buyingPower: totalBP,
+  },
+  positions: outPositions,
+  activitiesByAccount,
+  holdingsByAccount,
+  syncing,
+};
 
-    // 💾 Now: Save summary to DB
-    await saveSnaptradeUser(userId, userSecret, summary);
-    await syncHoldingsToUserHoldings(userId, outPositions); 
+// 💾 Now: Save summary to DB
+await saveSnaptradeUser(userId, userSecret, summary);
+await syncHoldingsToUserHoldings(userId, outPositions);
 
-    // ✅ Finally, respond!
-    res.json(summary);
+// ✅ Finally, respond!
+res.json(summary);
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }
@@ -1868,6 +1872,8 @@ app.post("/snaptrade/saveUser", async (req, res) => {
 
     // Build and save summary INCLUDING activitiesByAccount and holdingsByAccount
    // Replace the accounts mapping inside the POST /snaptrade/saveUser handler with this:
+const positionsValue = outPositions.reduce((sum: number, p: any) => sum + (p.value || 0), 0);
+
 const summary = {
   accounts: accounts.map((a: any, i: number) => {
     const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
@@ -1882,8 +1888,7 @@ const summary = {
 
     const buyingPower =
       pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {})
- ??
+      pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {}) ??
       cash;
 
     return {
@@ -1898,7 +1903,7 @@ const summary = {
     }
   }),
   totals: {
-    equity: Math.max(0, totalValue - totalCash),
+    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
     cash: totalCash,
     buyingPower: totalBP,
   },

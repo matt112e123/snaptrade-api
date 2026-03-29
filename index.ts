@@ -79,7 +79,8 @@ async function syncHoldingsToUserHoldings(userId: string, positions: any[]) {
     console.log(`📦 holdings/sync response: ${response.status} ${responseText}`);
   } catch (err) {
     console.error('❌ Failed to sync holdings to main backend:', err);
-  }
+  
+}
 }
 
 // Persist activities and upsert when brokerage_order_id exists
@@ -890,25 +891,37 @@ app.get("/debug/brokerageAuths", async (req, res) => {
  * Optional (dev only): ?json=1 when ALLOW_JSON=1
  */
 
-async function checkRevenueCatSubscription(rcUserId: string): Promise<boolean> {
+async function checkAppleSubscription(receiptData: string): Promise<boolean> {
+  if (!receiptData) return false;
+  const sharedSecret = process.env.APPLE_SHARED_SECRET || '';
+  const body = JSON.stringify({ 'receipt-data': receiptData, 'password': sharedSecret });
+
   try {
-    const response = await fetch(
-      `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}`,
-      {
-        headers: {
-          "Authorization": `Bearer ${process.env.REVENUECAT_SECRET_KEY}`,
-          "Content-Type": "application/json"
-        }
-      }
+    // Try production first
+    let resp = await fetch('https://buy.itunes.apple.com/verifyReceipt', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+    });
+    let json: any = await resp.json();
+
+    // 21007 = sandbox receipt sent to production — switch to sandbox (TestFlight)
+    if (json.status === 21007) {
+      resp = await fetch('https://sandbox.itunes.apple.com/verifyReceipt', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body
+      });
+      json = await resp.json();
+    }
+
+    if (json.status !== 0) return false;
+
+    const purchases: any[] = json.latest_receipt_info || [];
+    const now = Date.now();
+    return purchases.some(p =>
+      p.product_id === 'tygerai_pro_1month' &&
+      Number(p.expires_date_ms) > now
     );
-    if (!response.ok) return false;
-    const data: any = await response.json();
-    const entitlements = data?.subscriber?.entitlements ?? {};
-    const pro = entitlements["pro"];
-    return pro?.expires_date == null || new Date(pro.expires_date) > new Date();
   } catch (e) {
-    console.error("RevenueCat check failed:", e);
-    return false; // fail closed — deny if can't verify
+    console.error('Apple receipt check failed:', e);
+    return false; // fail closed
   }
 }
 
@@ -934,16 +947,7 @@ async function handleConnect(req: express.Request, res: express.Response) {
           });
           const brokerCount = auths?.data?.length ?? 0;
 
-          if (brokerCount >= 1) {
-            // They already have a broker — check if they're pro
-            if (!rcUserId) {
-              return res.status(403).json({ error: "pro_required", message: "Upgrade to Pro to link multiple brokers." });
-            }
-            const isPro = await checkRevenueCatSubscription(rcUserId);
-            if (!isPro) {
-              return res.status(403).json({ error: "pro_required", message: "Upgrade to Pro to link multiple brokers." });
-            }
-          }
+
         } catch (e) {
           console.warn("Could not check broker count for gate:", e);
           // fail open — let them through if we can't check

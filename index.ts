@@ -1220,6 +1220,7 @@ for (const p of explicitPositions) {
   outPositions.push({
     symbol: sym,
     symbolId,
+    accountId: String(accountId),
     needsMapping: UUID_RE.test(sym),
     name: extractDisplayName(p),
     quantity: qty,

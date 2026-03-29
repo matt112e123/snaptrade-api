@@ -1218,7 +1218,7 @@ for (const p of explicitPositions) {
   const value = (mv != null && mv !== undefined) ? mv : (qty * price);
 
   outPositions.push({
-    symbol: sym,
+    symbol: sym, 
     symbolId,
     accountId: String(accountId),
     needsMapping: UUID_RE.test(sym),

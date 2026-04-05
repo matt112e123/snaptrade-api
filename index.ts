@@ -1729,6 +1729,23 @@ res.json(order.data);
 
 
 /* ----------------------- Trade: Symbol Lookup (New) ----------------------- */
+app.get("/market/price/:symbol", async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  try {
+    const response = await fetch(
+      `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${process.env.TWELVE_DATA_API_KEY}`
+    );
+    const data = await response.json();
+    if (data.price) {
+      res.json({ symbol, price: parseFloat(data.price) });
+    } else {
+      res.status(404).json({ error: "Symbol not found", detail: data });
+    }
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
+
 app.get("/trade/symbol/:ticker", async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   try {
@@ -1741,7 +1758,6 @@ app.get("/trade/symbol/:ticker", async (req, res) => {
     res.status(500).json(errPayload(err));
   }
 });
-
 /* ---------------------- Save Snaptrade User ---------------------- */
 // Replace the existing POST /snaptrade/saveUser handler with this block
 app.post("/snaptrade/saveUser", async (req, res) => {

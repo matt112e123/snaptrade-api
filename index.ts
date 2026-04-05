@@ -1727,15 +1727,11 @@ res.json(order.data);
 app.get("/trade/symbol/:ticker", async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   try {
-    const snaptrade = mkClient();
-
-    const allSymbols = await snaptrade.referenceData.getSymbols();
-    const matches = (allSymbols.data || []).filter((s: any) =>
-      s.symbol?.toUpperCase().includes(ticker) ||
-      s.description?.toUpperCase().includes(ticker)
+    const response = await fetch(
+      `https://api.twelvedata.com/symbol_search?symbol=${ticker}&apikey=${process.env.TWELVE_DATA_API_KEY}`
     );
-
-    res.json(matches);
+    const data = await response.json();
+    res.json(data.data || []);
   } catch (err: any) {
     res.status(500).json(errPayload(err));
   }

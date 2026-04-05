@@ -1584,7 +1584,7 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!app.post("/trade/
 
   const tradeId = uuidv4();
 
-  try {
+try {
     const {
       userId,
       userSecret,
@@ -1593,7 +1593,9 @@ console.log("PlaceOrder received:", req.body); // <-- Add this!app.post("/trade/
       action,
       orderType,
       quantity,
-      limitPrice
+      limitPrice,  
+      stopPrice,
+      timeInForce
     } = req.body;
 
     if (!userId || !userSecret || !accountId || !symbol || !action || !orderType || !quantity) {
@@ -1684,9 +1686,12 @@ const order = await snaptrade.trading.placeForceOrder({
     action,
     symbol,
     order_type: orderType,
-    time_in_force: "Day",
+    time_in_force: timeInForce || "Day",  // ← use from request
     units: Number(quantity),
-    ...(orderType && orderType.toUpperCase() === "LIMIT" && limitPrice != null ? { price: Number(limitPrice) } : {})
+    ...(( orderType === "Limit" || orderType === "StopLimit") && limitPrice != null 
+        ? { price: Number(limitPrice) } : {}),
+    ...((orderType === "Stop" || orderType === "StopLimit") && stopPrice != null 
+        ? { stop: Number(stopPrice) } : {})  // ← add stop price
 });
 res.json(order.data);
 

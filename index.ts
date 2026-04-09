@@ -304,15 +304,14 @@ const summary = {
     const balObj = h?.balance || {};
     const balancesArr = h?.balances || [];
 
-    const cash =
-      pickNumber(balObj.cash, balObj.cash?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
-      null;
-
-    const buyingPower =
-      pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.buying_power != null) || {}) ??
-      null;
+   const rawCash =
+  pickNumber(balObj.cash, balObj.cash?.amount) ??
+  pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ?? null;
+const totalAmount = pickNumber(balObj?.total, balObj?.total?.amount);
+const cash = (rawCash === 0 && totalAmount && totalAmount > 0) ? totalAmount : rawCash;
+const buyingPower =
+  pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
+  cash;
 
     return {
       id: String(accountId),
@@ -1276,7 +1275,7 @@ const summary = {
       buyingPower
     }
   }),
-  
+
   totals: {
     equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
     cash: totalCash,

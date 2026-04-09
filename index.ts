@@ -1255,14 +1255,17 @@ const summary = {
     //   : rawCash;       ← DELETE
 
     // KEEP ONLY THIS ONE:
-    const rawCash =
-      pickNumber(balObj.cash, balObj.cash?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ?? null;
-    const totalAmount = pickNumber(balObj?.total, balObj?.total?.amount);
-    const cash = (rawCash === 0 && totalAmount && totalAmount > 0) ? totalAmount : rawCash;
-    const buyingPower =
-      pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
-      cash;
+  const rawCash =
+  pickNumber(balObj.cash, balObj.cash?.amount) ??
+  pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ?? null;
+const totalAmount = pickNumber(balObj?.total, balObj?.total?.amount);
+const cash = (rawCash === 0 && totalAmount && totalAmount > 0) ? totalAmount : rawCash;
+const buyingPower =
+  pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
+  cash;
+
+// ← ADD THIS RIGHT HERE
+console.log(`DEBUG CASH for ${accountId}: rawCash=${rawCash} totalAmount=${totalAmount} cash=${cash} buyingPower=${buyingPower}`);
 
     return {
       id: String(accountId),

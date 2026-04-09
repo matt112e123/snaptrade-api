@@ -312,6 +312,8 @@ const cash = (rawCash === 0 && totalAmount && totalAmount > 0) ? totalAmount : r
 const buyingPower =
   pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
   cash;
+  console.log(`DEBUG CASH for ${accountId}: rawCash=${rawCash} totalAmount=${totalAmount} cash=${cash} buyingPower=${buyingPower}`);
+
 
     return {
       id: String(accountId),

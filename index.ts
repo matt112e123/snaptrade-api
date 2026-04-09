@@ -1245,7 +1245,8 @@ const summary = {
   accounts: accounts.map((a: any, i: number) => {
     const accountId = a.id ?? a.accountId ?? a.number ?? a.guid ?? `acct-${i}`;
     const h = holdingsByAccount?.[accountId];
-    const balObj = h?.balance || {};
+const balObj = h?.balance || {};
+console.log(`DEBUG BALOBJ for ${accountId}:`, JSON.stringify(balObj, null, 2));
     const balancesArr = h?.balances || [];
 
     // DELETE everything from here to the second block ↓

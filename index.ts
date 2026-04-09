@@ -1247,14 +1247,22 @@ const summary = {
     const balObj = h?.balance || {};
     const balancesArr = h?.balances || [];
 
-    const cash =
-      pickNumber(balObj.cash, balObj.cash?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
-      null;
+    // DELETE everything from here to the second block ↓
+    // const rawCash = pickNumber(balObj.cash, balObj.cash?.amount) ??   ← DELETE
+    //   pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ?? null;  ← DELETE
+    // const totalAmount = pickNumber(balObj?.total, balObj?.total?.amount);  ← DELETE
+    // const cash = (rawCash === 0 && totalAmount && totalAmount > 0)   ← DELETE
+    //   ? totalAmount    ← DELETE
+    //   : rawCash;       ← DELETE
 
+    // KEEP ONLY THIS ONE:
+    const rawCash =
+      pickNumber(balObj.cash, balObj.cash?.amount) ??
+      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ?? null;
+    const totalAmount = pickNumber(balObj?.total, balObj?.total?.amount);
+    const cash = (rawCash === 0 && totalAmount && totalAmount > 0) ? totalAmount : rawCash;
     const buyingPower =
       pickNumber(balObj.buyingPower, balObj.buying_power, balObj.buying_power?.amount) ??
-      pickNumber(balancesArr.find((b: any) => b?.cash != null) || {}) ??
       cash;
 
     return {
@@ -1268,6 +1276,7 @@ const summary = {
       buyingPower
     }
   }),
+  
   totals: {
     equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
     cash: totalCash,
@@ -1938,6 +1947,24 @@ const summary = {
   }
 });
 
+// ── Force refresh a single account ──
+app.post("/snaptrade/refresh-account", async (req, res) => {
+  try {
+    const { userId, accountId } = req.body;
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+    if (!userId || !userSecret) return res.status(400).json({ error: "Missing credentials" });
+
+    const snaptrade = mkClient();
+    const h = await snaptrade.accountInformation.getUserHoldings({ 
+      userId, userSecret, accountId 
+    });
+    await saveAccountHoldingsToDB(userId, accountId, h.data);
+    console.log(`✅ Force refreshed account ${accountId} for ${userId}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json(errPayload(err));
+  }
+});
 
 /* ---------------- Debug logging for SnapTrade webhook ---------------- */
 app.use("/webhook/snaptrade", (req, res, next) => {

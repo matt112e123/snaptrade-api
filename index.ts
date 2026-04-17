@@ -730,80 +730,59 @@ app.get("/status", async (_req, res) => {
 /* -------------------------- debug helpers ------------------------- */
 
 // Add this route after your debug helpers
-// Replace your /market/history/:symbol handler with this
 app.get('/market/history/:symbol', async (req, res) => {
   try {
     const symbol = (req.params.symbol || '').toUpperCase();
-    const from = String(req.query.from || ''); // "YYYY-MM-DD" optional
-    const to = String(req.query.to || '');     // "YYYY-MM-DD" optional
-    const apiKey = process.env.FMP_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'Missing FMP_API_KEY in env' });
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    const apiKey = process.env.TWELVE_DATA_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY in env' });
 
-    const cacheKey = `${symbol}|light|${from}|${to}`;
+    const cacheKey = `${symbol}|12data|${from}|${to}`;
     const cached = MARKET_CACHE.get(cacheKey);
     if (cached && Date.now() < cached.expires) {
       return res.json(cached.data);
     }
 
-    const url = `https://financialmodelingprep.com/stable/historical-price-eod/light?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`;
+    // Build 12data URL
+    const params = new URLSearchParams({
+      symbol,
+      interval: '1day',
+      outputsize: '90',
+      apikey: apiKey,
+    });
+    if (from) params.set('start_date', from);
+    if (to) params.set('end_date', to);
 
+    const url = `https://api.twelvedata.com/time_series?${params.toString()}`;
     const resp = await fetch(url);
-    const text = await resp.text();
-    let json: any = null;
-    try { json = JSON.parse(text); } catch (e: any) { json = null; }
+    const json: any = await resp.json();
 
-    if (!resp.ok) {
-      // If FMP returned an informative JSON error, forward it
-      if (json) return res.status(resp.status).json(json);
-      return res.status(resp.status).send(text || `FMP error ${resp.status}`);
+    // 12data returns { status: 'error', message: '...' } on failure
+    if (json?.status === 'error') {
+      return res.status(502).json({ error: json.message || '12data error' });
     }
 
-    // Detect common "legacy" error payload and return informative message
-    if (json && typeof json === 'object' && json['Error Message'] && /Legacy Endpoint/i.test(String(json['Error Message']))) {
-      return res.status(502).json({ error: 'FMP legacy endpoint not available for this key/plan', detail: json['Error Message'] });
-    }
+    // 12data shape: { meta: {...}, values: [{ datetime, open, high, low, close, volume }] }
+    const items: any[] = Array.isArray(json?.values) ? json.values : [];
 
-    // Normalize: FMP light endpoint returns an object like { symbol: 'AMZN', historical: [{ date: '2025-12-10', close: 123.45, ...}, ...] }
-    // But be defensive: accept array, or json.historical
-    let items: any[] = [];
-    if (Array.isArray(json)) {
-      items = json;
-    } else if (Array.isArray(json?.historical)) {
-      items = json.historical;
-    } else if (Array.isArray(json?.prices)) {
-      items = json.prices;
-    } else {
-      // Unknown shape — return raw for debugging
-      MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: { provider: 'fmp', symbol, values: [], raw: json } });
-      return res.json({ provider: 'fmp', symbol, values: [], raw: json });
-    }
+    let values = items.map((it: any) => ({
+      date: String(it.datetime).split(' ')[0],
+      close: Number(it.close),
+    })).filter(v => !Number.isNaN(v.close));
 
-    // Map/normalize to { date, close } and sort ascending
-    const dayFmt = (d: string) => d; // assume already "YYYY-MM-DD" or "YYYY-MM-DD HH:mm:ss"
-    let values = items
-      .map((it: any) => {
-        // date candidates
-        const dateStr = it.date || it.datetime || it.time || it.timestamp;
-        // close candidates: cover different FMP shapes (price, close, adjClose, close_price)
-        const closeCandidate = it.close ?? it.price ?? it.adjClose ?? it.closePrice ?? it.close_price ?? it.close;
-        const close = (closeCandidate !== undefined && closeCandidate !== null) ? Number(closeCandidate) : NaN;
-        return (dateStr && !Number.isNaN(close)) ? { date: String(dateStr).split(' ')[0], close } : null;
-      })
-      .filter(Boolean) as { date: string; close: number }[];
-
-    // Sort ascending by date
+    // 12data returns newest first — sort ascending
     values.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-    // Filter by from/to if provided (both in "YYYY-MM-DD" form)
     if (from) values = values.filter(v => v.date >= from);
     if (to) values = values.filter(v => v.date <= to);
 
-    const payload = { provider: 'fmp', symbol, values, raw: json };
+    const payload = { provider: '12data', symbol, values };
     MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: payload });
 
     return res.json(payload);
   } catch (err: any) {
-    console.error('Market history (FMP light) error', err);
+    console.error('Market history (12data) error', err);
     res.status(500).json({ error: 'server error', detail: String(err) });
   }
 });
@@ -2062,7 +2041,6 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
   }
 });
 
-// Push notification helpers (extend later)
 // Push notification helpers (extend later)
 async function sendPortfolioUpdateNotification(userId: string, summary: any) {
   try {

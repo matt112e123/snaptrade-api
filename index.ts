@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 import { startPriceAlertService, runPriceAlertJob } from "./priceAlertService";
 import usersRouter from "./usersRoute";
+import apn from '@parse/node-apn';
 
 import pkg from "pg";
 const { Pool } = pkg;
@@ -2887,10 +2888,73 @@ async function checkPriceAlerts() {
   }
 }
 
-// Placeholder push sender (Phase 2 will fill this in with real APNs)
+// ════════════════════════════════════════════════════════════════════
+// APNS — Apple Push Notification Service
+// ════════════════════════════════════════════════════════════════════
+
+const apnProvider = (() => {
+  if (!process.env.APNS_PRIVATE_KEY || !process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID) {
+    console.warn('⚠️  APNs not configured — pushes will be logged only');
+    return null;
+  }
+  return new apn.Provider({
+    token: {
+      key: process.env.APNS_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      keyId: process.env.APNS_KEY_ID,
+      teamId: process.env.APNS_TEAM_ID,
+    },
+    production: process.env.APNS_PRODUCTION === 'true',
+  });
+})();
+
 async function sendPriceAlertNotification(userId: string, symbol: string, reason: string) {
-  // For now, just log. Phase 2 will look up the device token and send via APNs.
-  console.log(`📱 [Phase 2 will send] push to ${userId}: ${symbol} — ${reason}`);
+  try {
+    // Look up all device tokens for this user (a user can have multiple devices)
+    const result = await pool.query(
+      'SELECT device_token FROM device_tokens WHERE user_id = $1',
+      [userId]
+    );
+    const tokens = result.rows.map(r => r.device_token);
+
+    if (tokens.length === 0) {
+      console.log(`📱 [no devices] ${userId}: ${symbol} — ${reason}`);
+      return;
+    }
+
+    if (!apnProvider) {
+      console.log(`📱 [APNs disabled] ${userId}: ${symbol} — ${reason}`);
+      return;
+    }
+
+    const note = new apn.Notification();
+    note.alert = {
+      title: `${symbol} Alert`,
+      body: reason,
+    };
+    note.sound = 'default';
+    note.topic = process.env.APNS_BUNDLE_ID || 'com.apexmarkets.app';
+    note.payload = { symbol, reason, type: 'price_alert' };
+    note.expiry = Math.floor(Date.now() / 1000) + 3600; // expire in 1 hour if undelivered
+
+    const response = await apnProvider.send(note, tokens);
+
+    console.log(`📱 Push sent for ${symbol} to ${userId}: ${response.sent.length} ok, ${response.failed.length} failed`);
+
+    // Clean up dead tokens (Apple rejects them when user uninstalls app)
+  // Clean up dead tokens (Apple rejects them when user uninstalls app)
+    for (const failure of response.failed as any[]) {
+      const reason = failure?.response?.reason;
+      const status = String(failure?.status ?? '');
+      if (status === '410' || reason === 'BadDeviceToken' || reason === 'Unregistered') {
+        console.log(`🧹 Removing dead token: ${String(failure.device).substring(0, 16)}...`);
+        await pool.query('DELETE FROM device_tokens WHERE device_token = $1', [failure.device]);
+      } else {
+        console.warn(`Push failure: ${reason || failure?.error}`);
+      }
+    }
+  } catch (e) {
+    console.warn('Could not send price alert push:', e);
+  }
 }
 
 // Start the checker — runs every 60 seconds

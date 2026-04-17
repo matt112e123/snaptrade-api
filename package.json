@@ -12,6 +12,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@parse/node-apn": "^8.1.0",
     "axios": "^1.13.6",
     "cacheable-lookup": "^7.0.0",
     "cors": "^2.8.5",

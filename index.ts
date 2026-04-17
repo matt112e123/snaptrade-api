@@ -2407,6 +2407,55 @@ res.json({
 });
 
 // ════════════════════════════════════════════════════════════════════
+// DEVICE TOKEN REGISTRATION — for push notifications
+// ════════════════════════════════════════════════════════════════════
+
+// iOS app calls this after user grants push permission
+app.post('/devices/register', async (req, res) => {
+  try {
+    const { userId, deviceToken, platform, bundleId, appVersion } = req.body;
+
+    if (!userId || !deviceToken) {
+      return res.status(400).json({ error: 'Missing userId or deviceToken' });
+    }
+
+    // Upsert: if same token already exists, update user binding + last_seen
+    const result = await pool.query(
+      `INSERT INTO device_tokens (user_id, device_token, platform, bundle_id, app_version)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (device_token) DO UPDATE
+       SET user_id = EXCLUDED.user_id,
+           bundle_id = EXCLUDED.bundle_id,
+           app_version = EXCLUDED.app_version,
+           last_seen_at = NOW(),
+           updated_at = NOW()
+       RETURNING *`,
+      [userId, deviceToken, platform || 'ios', bundleId || null, appVersion || null]
+    );
+
+    console.log(`📱 Device registered for ${userId}: ${deviceToken.substring(0, 16)}...`);
+    res.json({ success: true, device: result.rows[0] });
+  } catch (err: any) {
+    console.error('❌ Device register error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Optional: unregister (e.g. user logs out)
+app.delete('/devices/register', async (req, res) => {
+  try {
+    const deviceToken = String(req.query.deviceToken || req.body?.deviceToken || '');
+    if (!deviceToken) return res.status(400).json({ error: 'Missing deviceToken' });
+
+    await pool.query(`DELETE FROM device_tokens WHERE device_token = $1`, [deviceToken]);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('❌ Device unregister error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════
 // PRICE ALERTS — user-configurable notifications
 // ════════════════════════════════════════════════════════════════════
 

@@ -823,6 +823,33 @@ app.get('/market/price/:symbol', async (req, res) => {
   }
 });
 
+app.get('/market/history/batch', async (req, res) => {
+  const symbols = String(req.query.symbols || '').split(',').filter(Boolean).map(s => s.toUpperCase());
+  const from = String(req.query.from || '');
+  const to = String(req.query.to || '');
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY' });
+
+  const url = `https://api.twelvedata.com/time_series?symbol=${symbols.join(',')}&interval=1day&outputsize=90&apikey=${apiKey}${from ? `&start_date=${from}` : ''}${to ? `&end_date=${to}` : ''}`;
+  
+  const resp = await fetch(url);
+  const json: any = await resp.json();
+  
+  // 12data returns single object if 1 symbol, keyed object if multiple
+  const result: Record<string, {date: string, close: number}[]> = {};
+  
+  for (const sym of symbols) {
+    const data = symbols.length === 1 ? json : json[sym];
+    if (!data?.values) continue;
+    result[sym] = data.values
+      .map((it: any) => ({ date: String(it.datetime).split(' ')[0], close: Number(it.close) }))
+      .filter((v: any) => !isNaN(v.close))
+      .sort((a: any, b: any) => a.date < b.date ? -1 : 1);
+  }
+  
+  res.json(result);
+});
+
 app.get("/debug/listUsers", async (_req, res) => {
   try {
     const snaptrade = mkClient();

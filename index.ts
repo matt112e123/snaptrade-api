@@ -1747,11 +1747,18 @@ app.get("/market/price/:symbol", async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   try {
     const response = await fetch(
-      `https://api.twelvedata.com/price?symbol=${symbol}&apikey=${process.env.TWELVE_DATA_API_KEY}`
+      `https://api.twelvedata.com/quote?symbol=${symbol}&apikey=${process.env.TWELVE_DATA_API_KEY}`
     );
-    const data = await response.json();
-    if (data.price) {
-      res.json({ symbol, price: parseFloat(data.price) });
+    const data: any = await response.json();
+
+    if (data?.close) {
+      res.json({
+        symbol,
+        price: parseFloat(data.close),
+        changePercent: data.percent_change ? parseFloat(data.percent_change) : 0,
+        change: data.change ? parseFloat(data.change) : 0,
+        previousClose: data.previous_close ? parseFloat(data.previous_close) : 0,
+      });
     } else {
       res.status(404).json({ error: "Symbol not found", detail: data });
     }

@@ -2101,6 +2101,55 @@ app.get('/user/secret', async (req, res) => {
   return res.json({ userSecret });
 });
 
+// ── Manually refresh a SnapTrade connection (forces immediate sync) ──
+// iOS app calls this when user pulls to refresh.
+// SnapTrade will then fire ACCOUNT_HOLDINGS_UPDATED to our webhook
+// once fresh data is pulled from the broker.
+app.post('/refresh-account', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const userSecret = getSecret(userId) || await fetchUserSecretFromDB(userId);
+
+    if (!userId || !userSecret) {
+      return res.status(400).json({ error: 'Missing userId or userSecret' });
+    }
+
+    const snaptrade = mkClient();
+
+    const authsResp = await snaptradeCall(() =>
+      snaptrade.connections.listBrokerageAuthorizations({ userId, userSecret })
+    );
+    const auths: any[] = authsResp?.data || [];
+
+    if (auths.length === 0) {
+      return res.status(404).json({ error: 'No brokerage connections found' });
+    }
+
+    const results = await Promise.allSettled(
+      auths
+        .filter(a => !a.disabled)
+        .map(a =>
+          snaptradeCall(() =>
+            snaptrade.connections.refreshBrokerageAuthorization({
+              authorizationId: a.id,
+              userId,
+              userSecret,
+            })
+          )
+        )
+    );
+
+    const refreshed = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.filter(r => r.status === 'rejected').length;
+
+    console.log(`🔄 Manual refresh for ${userId}: ${refreshed} ok, ${failed} failed`);
+    res.json({ success: true, refreshed, failed });
+
+  } catch (err: any) {
+    console.error('❌ Refresh error:', err);
+    res.status(500).json(errPayload(err));
+  }
+});
 
 // ── Order history (last 24hrs from SnapTrade + full history from DB) ──
 app.get('/orders/recent', async (req, res) => {

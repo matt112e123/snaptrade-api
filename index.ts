@@ -2399,6 +2399,131 @@ res.json({
   }
 });
 
+// ════════════════════════════════════════════════════════════════════
+// PRICE ALERTS — user-configurable notifications
+// ════════════════════════════════════════════════════════════════════
+
+// Create a new alert
+app.post('/alerts', async (req, res) => {
+  try {
+    const { userId, symbol, conditionType, threshold } = req.body;
+
+    if (!userId || !symbol || !conditionType || threshold === undefined) {
+      return res.status(400).json({ error: 'Missing userId, symbol, conditionType, or threshold' });
+    }
+
+    const validTypes = ['above', 'below', 'pct_up', 'pct_down'];
+    if (!validTypes.includes(conditionType)) {
+      return res.status(400).json({ error: `conditionType must be one of: ${validTypes.join(', ')}` });
+    }
+
+    const thresholdNum = Number(threshold);
+    if (isNaN(thresholdNum) || thresholdNum <= 0) {
+      return res.status(400).json({ error: 'threshold must be a positive number' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO price_alerts (user_id, symbol, condition_type, threshold)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [userId, symbol.toUpperCase(), conditionType, thresholdNum]
+    );
+
+    console.log(`🔔 Alert created for ${userId}: ${symbol} ${conditionType} ${threshold}`);
+    res.json({ success: true, alert: result.rows[0] });
+  } catch (err: any) {
+    console.error('❌ Create alert error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List a user's alerts
+app.get('/alerts', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+
+    const result = await pool.query(
+      `SELECT * FROM price_alerts
+       WHERE user_id = $1
+       ORDER BY created_at DESC`,
+      [userId]
+    );
+
+    res.json({ alerts: result.rows, count: result.rows.length });
+  } catch (err: any) {
+    console.error('❌ List alerts error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update an alert (toggle active, change threshold)
+app.patch('/alerts/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { userId, isActive, threshold, conditionType } = req.body;
+
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid alert id' });
+
+    // Build dynamic update
+    const updates: string[] = [];
+    const values: any[] = [];
+    let i = 1;
+
+    if (isActive !== undefined) { updates.push(`is_active = $${i++}`); values.push(Boolean(isActive)); }
+    if (threshold !== undefined) { updates.push(`threshold = $${i++}`); values.push(Number(threshold)); }
+    if (conditionType !== undefined) { updates.push(`condition_type = $${i++}`); values.push(conditionType); }
+
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+
+    updates.push(`updated_at = NOW()`);
+    values.push(id, userId);
+
+    const result = await pool.query(
+      `UPDATE price_alerts SET ${updates.join(', ')}
+       WHERE id = $${i++} AND user_id = $${i}
+       RETURNING *`,
+      values
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Alert not found or not owned by user' });
+    }
+
+    res.json({ success: true, alert: result.rows[0] });
+  } catch (err: any) {
+    console.error('❌ Update alert error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete an alert
+app.delete('/alerts/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = String(req.query.userId || req.body?.userId || '');
+
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    if (isNaN(id)) return res.status(400).json({ error: 'Invalid alert id' });
+
+    const result = await pool.query(
+      `DELETE FROM price_alerts WHERE id = $1 AND user_id = $2 RETURNING id`,
+      [id, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Alert not found or not owned by user' });
+    }
+
+    console.log(`🗑️  Alert ${id} deleted for ${userId}`);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error('❌ Delete alert error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // ── Enterprise: API key auth middleware ──
 async function authenticateEnterpriseKey(req: any, res: any, next: any) {

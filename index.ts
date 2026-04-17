@@ -729,64 +729,6 @@ app.get("/status", async (_req, res) => {
 
 /* -------------------------- debug helpers ------------------------- */
 
-// Add this route after your debug helpers
-app.get('/market/history/:symbol', async (req, res) => {
-  try {
-    const symbol = (req.params.symbol || '').toUpperCase();
-    const from = String(req.query.from || '');
-    const to = String(req.query.to || '');
-    const apiKey = process.env.TWELVE_DATA_API_KEY;
-    if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY in env' });
-
-    const cacheKey = `${symbol}|12data|${from}|${to}`;
-    const cached = MARKET_CACHE.get(cacheKey);
-    if (cached && Date.now() < cached.expires) {
-      return res.json(cached.data);
-    }
-
-    // Build 12data URL
-    const params = new URLSearchParams({
-      symbol,
-      interval: '1day',
-      outputsize: '90',
-      apikey: apiKey,
-    });
-    if (from) params.set('start_date', from);
-    if (to) params.set('end_date', to);
-
-    const url = `https://api.twelvedata.com/time_series?${params.toString()}`;
-    const resp = await fetch(url);
-    const json: any = await resp.json();
-
-    // 12data returns { status: 'error', message: '...' } on failure
-    if (json?.status === 'error') {
-      return res.status(502).json({ error: json.message || '12data error' });
-    }
-
-    // 12data shape: { meta: {...}, values: [{ datetime, open, high, low, close, volume }] }
-    const items: any[] = Array.isArray(json?.values) ? json.values : [];
-
-    let values = items.map((it: any) => ({
-      date: String(it.datetime).split(' ')[0],
-      close: Number(it.close),
-    })).filter(v => !Number.isNaN(v.close));
-
-    // 12data returns newest first — sort ascending
-    values.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-
-    if (from) values = values.filter(v => v.date >= from);
-    if (to) values = values.filter(v => v.date <= to);
-
-    const payload = { provider: '12data', symbol, values };
-    MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: payload });
-
-    return res.json(payload);
-  } catch (err: any) {
-    console.error('Market history (12data) error', err);
-    res.status(500).json({ error: 'server error', detail: String(err) });
-  }
-});
-
 app.get('/market/price/:symbol', async (req, res) => {
   try {
     const symbol = (req.params.symbol || '').toUpperCase();
@@ -848,6 +790,65 @@ app.get('/market/history/batch', async (req, res) => {
   }
   
   res.json(result);
+});
+
+
+// Add this route after your debug helpers
+app.get('/market/history/:symbol', async (req, res) => {
+  try {
+    const symbol = (req.params.symbol || '').toUpperCase();
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    const apiKey = process.env.TWELVE_DATA_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY in env' });
+
+    const cacheKey = `${symbol}|12data|${from}|${to}`;
+    const cached = MARKET_CACHE.get(cacheKey);
+    if (cached && Date.now() < cached.expires) {
+      return res.json(cached.data);
+    }
+
+    // Build 12data URL
+    const params = new URLSearchParams({
+      symbol,
+      interval: '1day',
+      outputsize: '90',
+      apikey: apiKey,
+    });
+    if (from) params.set('start_date', from);
+    if (to) params.set('end_date', to);
+
+    const url = `https://api.twelvedata.com/time_series?${params.toString()}`;
+    const resp = await fetch(url);
+    const json: any = await resp.json();
+
+    // 12data returns { status: 'error', message: '...' } on failure
+    if (json?.status === 'error') {
+      return res.status(502).json({ error: json.message || '12data error' });
+    }
+
+    // 12data shape: { meta: {...}, values: [{ datetime, open, high, low, close, volume }] }
+    const items: any[] = Array.isArray(json?.values) ? json.values : [];
+
+    let values = items.map((it: any) => ({
+      date: String(it.datetime).split(' ')[0],
+      close: Number(it.close),
+    })).filter(v => !Number.isNaN(v.close));
+
+    // 12data returns newest first — sort ascending
+    values.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+    if (from) values = values.filter(v => v.date >= from);
+    if (to) values = values.filter(v => v.date <= to);
+
+    const payload = { provider: '12data', symbol, values };
+    MARKET_CACHE.set(cacheKey, { expires: Date.now() + MARKET_CACHE_TTL_MS, data: payload });
+
+    return res.json(payload);
+  } catch (err: any) {
+    console.error('Market history (12data) error', err);
+    res.status(500).json({ error: 'server error', detail: String(err) });
+  }
 });
 
 app.get("/debug/listUsers", async (_req, res) => {

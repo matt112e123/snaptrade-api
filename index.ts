@@ -3001,3 +3001,9 @@ app.listen(PORT, HOST, () => {
   const ips = lanIPs();
   if (ips.length) console.log(`Phone:  http://${ips[0]}:${PORT}/health`);
 });
+
+// Keep Render awake
+setInterval(() => {
+  fetch("https://snaptrade-api-da44.onrender.com/health")
+    .catch(() => {})
+}, 14 * 60 * 1000);

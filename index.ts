@@ -766,30 +766,45 @@ app.get('/market/price/:symbol', async (req, res) => {
 });
 
 app.get('/market/history/batch', async (req, res) => {
-  const symbols = String(req.query.symbols || '').split(',').filter(Boolean).map(s => s.toUpperCase());
-  const from = String(req.query.from || '');
-  const to = String(req.query.to || '');
-  const apiKey = process.env.TWELVE_DATA_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY' });
+  try {
+    const symbols = String(req.query.symbols || '').split(',').filter(Boolean).map(s => s.toUpperCase());
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    const apiKey = process.env.TWELVE_DATA_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY' });
+    if (!symbols.length) return res.status(400).json({ error: 'No symbols provided' });
 
-  const url = `https://api.twelvedata.com/time_series?symbol=${symbols.join(',')}&interval=1day&outputsize=90&apikey=${apiKey}${from ? `&start_date=${from}` : ''}${to ? `&end_date=${to}` : ''}`;
-  
-  const resp = await fetch(url);
-  const json: any = await resp.json();
-  
-  // 12data returns single object if 1 symbol, keyed object if multiple
-  const result: Record<string, {date: string, close: number}[]> = {};
-  
-  for (const sym of symbols) {
-    const data = symbols.length === 1 ? json : json[sym];
-    if (!data?.values) continue;
-    result[sym] = data.values
-      .map((it: any) => ({ date: String(it.datetime).split(' ')[0], close: Number(it.close) }))
-      .filter((v: any) => !isNaN(v.close))
-      .sort((a: any, b: any) => a.date < b.date ? -1 : 1);
+    // Calculate how many days we need
+    const daysDiff = (from && to)
+      ? Math.ceil((new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24))
+      : 90;
+    const outputsize = Math.min(Math.max(daysDiff + 10, 90), 5000);
+
+    const url = `https://api.twelvedata.com/time_series?symbol=${symbols.join(',')}&interval=1day&outputsize=${outputsize}&apikey=${apiKey}${from ? `&start_date=${from}` : ''}${to ? `&end_date=${to}` : ''}`;
+
+    const resp = await fetch(url);
+    const json: any = await resp.json();
+
+    if (json?.status === 'error') {
+      return res.status(502).json({ error: json.message || '12data error' });
+    }
+
+    const result: Record<string, { date: string; close: number }[]> = {};
+
+    for (const sym of symbols) {
+      const data = symbols.length === 1 ? json : json[sym];
+      if (!Array.isArray(data?.values)) continue;
+      result[sym] = data.values
+        .map((it: any) => ({ date: String(it.datetime).split(' ')[0], close: Number(it.close) }))
+        .filter((v: any) => !isNaN(v.close))
+        .sort((a: any, b: any) => a.date < b.date ? -1 : 1);
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    console.error('Batch history error', err);
+    res.status(500).json({ error: 'server error', detail: String(err) });
   }
-  
-  res.json(result);
 });
 
 
@@ -1082,7 +1097,6 @@ putSecret(userId, userSecret);
     res.status(500).json(errPayload(err));
   }
 }
-
 app.get("/connect", handleConnect);
 app.get("/connect/redirect", handleConnect);
 

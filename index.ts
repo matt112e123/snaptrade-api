@@ -2840,20 +2840,8 @@ async function checkPriceAlerts() {
 
 // Placeholder push sender (Phase 2 will fill this in with real APNs)
 async function sendPriceAlertNotification(userId: string, symbol: string, reason: string) {
-  try {
-    const result = await pool.query(
-      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
-      [userId]
-    );
-    const token = result.rows[0]?.device_token;
-    if (!token) {
-      console.log(`📱 [no device token] Would push to ${userId}: ${symbol} — ${reason}`);
-      return;
-    }
-    console.log(`📱 [Phase 2 will send real push] ${userId}: ${symbol} — ${reason}`);
-  } catch (e) {
-    console.warn('Could not send price alert push:', e);
-  }
+  // For now, just log. Phase 2 will look up the device token and send via APNs.
+  console.log(`📱 [Phase 2 will send] push to ${userId}: ${symbol} — ${reason}`);
 }
 
 // Start the checker — runs every 60 seconds

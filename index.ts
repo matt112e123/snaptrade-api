@@ -8,9 +8,10 @@ import path from "path";
 import { startPriceAlertService, runPriceAlertJob } from "./priceAlertService";
 import usersRouter from "./usersRoute";
 import apn from '@parse/node-apn';
-
 import pkg from "pg";
 const { Pool } = pkg;
+import WebSocket from 'ws';
+
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -2548,6 +2549,7 @@ app.post('/alerts', async (req, res) => {
     );
 
     console.log(`🔔 Alert created for ${userId}: ${symbol} ${conditionType} ${threshold}`);
+    await refreshAlertWebSocket(); // ← here
     res.json({ success: true, alert: result.rows[0] });
   } catch (err: any) {
     console.error('❌ Create alert error:', err);
@@ -3018,12 +3020,122 @@ async function sendPriceAlertNotification(userId: string, symbol: string, reason
   }
 }
 
-// Start the checker — runs every 60 seconds
-setInterval(checkPriceAlerts, 60 * 1000);
-console.log('⏰ Price alert checker scheduled — every 60s');
+// Replace these three lines:
+// setInterval(checkPriceAlerts, 60 * 1000);
+// console.log('⏰ Price alert checker scheduled — every 60s');
+// setTimeout(checkPriceAlerts, 5000);
 
-// Also run once on startup so we don't wait a full minute
-setTimeout(checkPriceAlerts, 5000);
+
+let alertWs: WebSocket | null = null;
+let wsSymbols: Set<string> = new Set();
+let latestPrices: Record<string, { price: number; pctChange: number }> = {};
+
+async function getActiveAlertSymbols(): Promise<string[]> {
+  const result = await pool.query(`SELECT DISTINCT symbol FROM price_alerts WHERE is_active = TRUE`);
+  return result.rows.map((r: any) => r.symbol);
+}
+
+async function evaluateAlerts() {
+  try {
+    const alertsResult = await pool.query(`SELECT * FROM price_alerts WHERE is_active = TRUE`);
+    const alerts = alertsResult.rows;
+    if (alerts.length === 0) return;
+
+    for (const alert of alerts) {
+      const market = latestPrices[alert.symbol];
+      if (!market) continue;
+
+      const threshold = parseFloat(alert.threshold);
+      let shouldFire = false;
+      let reason = '';
+
+      switch (alert.condition_type) {
+        case 'above':
+          if (market.price >= threshold) { shouldFire = true; reason = `price $${market.price.toFixed(2)} reached $${threshold}`; }
+          break;
+        case 'below':
+          if (market.price <= threshold) { shouldFire = true; reason = `price $${market.price.toFixed(2)} dropped below $${threshold}`; }
+          break;
+        case 'pct_up':
+          if (market.pctChange >= threshold) { shouldFire = true; reason = `up ${market.pctChange.toFixed(2)}% today (threshold ${threshold}%)`; }
+          break;
+        case 'pct_down':
+          if (market.pctChange <= -threshold) { shouldFire = true; reason = `down ${Math.abs(market.pctChange).toFixed(2)}% today (threshold ${threshold}%)`; }
+          break;
+      }
+
+      if (!shouldFire) continue;
+
+      if (alert.last_triggered_at) {
+        const hoursSince = (Date.now() - new Date(alert.last_triggered_at).getTime()) / 1000 / 3600;
+        if (hoursSince < 24) continue;
+      }
+
+      console.log(`🚨 ALERT FIRED for ${alert.user_id}: ${alert.symbol} ${alert.condition_type} — ${reason}`);
+      await pool.query(`UPDATE price_alerts SET last_triggered_at = NOW(), trigger_count = trigger_count + 1 WHERE id = $1`, [alert.id]);
+      await sendPriceAlertNotification(alert.user_id, alert.symbol, reason);
+    }
+  } catch (err) {
+    console.error('❌ Alert evaluation error:', err);
+  }
+}
+
+async function startAlertWebSocket() {
+  const apiKey = process.env.TWELVE_DATA_API_KEY;
+  if (!apiKey) { console.warn('No TWELVE_DATA_API_KEY — alerts disabled'); return; }
+
+  const symbols = await getActiveAlertSymbols();
+  if (symbols.length === 0) { console.log('No active alerts — skipping WS'); return; }
+
+  if (alertWs) { alertWs.terminate(); alertWs = null; }
+
+  wsSymbols = new Set(symbols);
+  const ws = new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${apiKey}`);
+  alertWs = ws;
+
+  ws.on('open', () => {
+    console.log('📡 12data WS connected');
+    ws.send(JSON.stringify({ action: 'subscribe', params: { symbols: symbols.join(',') } }));
+  });
+
+  ws.on('message', async (raw: any) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.event === 'price' && msg.symbol && typeof msg.price === 'number') {
+        latestPrices[msg.symbol] = {
+          price: msg.price,
+          pctChange: typeof msg.change_percent === 'number' ? msg.change_percent : 0,
+        };
+        await evaluateAlerts();
+      }
+    } catch (e) {
+      console.warn('WS parse error:', e);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('📡 12data WS closed — reconnecting in 5s');
+    alertWs = null;
+    setTimeout(startAlertWebSocket, 5000);
+  });
+
+  ws.on('error', (err) => {
+    console.error('📡 WS error:', err);
+    ws.terminate();
+  });
+}
+
+async function refreshAlertWebSocket() {
+  const symbols = await getActiveAlertSymbols();
+  const newSymbols = symbols.filter(s => !wsSymbols.has(s));
+  if (newSymbols.length > 0) {
+    console.log('📡 New symbols detected — restarting WS');
+    await startAlertWebSocket();
+  }
+}
+
+startAlertWebSocket();
+console.log('📡 Price alert WebSocket starting');
 
 /* ---------------------------- 404 last ---------------------------- */
 

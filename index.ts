@@ -2101,27 +2101,6 @@ app.get('/user/secret', async (req, res) => {
   return res.json({ userSecret });
 });
 
-// ── DEBUG: check if a user's secret exists in DB ──
-app.get('/debug/user-secret', async (req, res) => {
-  const userId = String(req.query.userId || '');
-  if (!userId) return res.status(400).json({ error: 'Missing userId' });
-  
-  try {
-    const result = await pool.query(
-      'SELECT user_id, user_secret IS NOT NULL AS has_secret, LENGTH(user_secret) AS secret_length FROM snaptrade_users WHERE user_id = $1',
-      [userId]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.json({ found: false, message: 'User not in DB' });
-    }
-    
-    res.json({ found: true, ...result.rows[0] });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ── Manually refresh a SnapTrade connection (forces immediate sync) ──
 // iOS app calls this when user pulls to refresh.
 // SnapTrade will then fire ACCOUNT_HOLDINGS_UPDATED to our webhook

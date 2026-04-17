@@ -787,6 +787,42 @@ app.get('/market/history/:symbol', async (req, res) => {
   }
 });
 
+app.get('/market/price/:symbol', async (req, res) => {
+  try {
+    const symbol = (req.params.symbol || '').toUpperCase();
+    const apiKey = process.env.TWELVE_DATA_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'Missing TWELVE_DATA_API_KEY in env' });
+
+    const cacheKey = `price|${symbol}`;
+    const cached = MARKET_CACHE.get(cacheKey);
+    if (cached && Date.now() < cached.expires) {
+      return res.json(cached.data);
+    }
+
+    const url = `https://api.twelvedata.com/price?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`;
+    const resp = await fetch(url);
+    const json: any = await resp.json();
+
+    if (json?.status === 'error') {
+      return res.status(502).json({ error: json.message || '12data error' });
+    }
+
+    const price = parseFloat(json?.price);
+    if (isNaN(price)) {
+      return res.status(502).json({ error: 'Invalid price response', raw: json });
+    }
+
+    const payload = { symbol, price };
+    // Cache for 60 seconds — it's a live price
+    MARKET_CACHE.set(cacheKey, { expires: Date.now() + 60_000, data: payload });
+
+    return res.json(payload);
+  } catch (err: any) {
+    console.error('Market price error', err);
+    res.status(500).json({ error: 'server error', detail: String(err) });
+  }
+});
+
 app.get("/debug/listUsers", async (_req, res) => {
   try {
     const snaptrade = mkClient();

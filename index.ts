@@ -327,8 +327,11 @@ const buyingPower =
       buyingPower
     }
   }),
-  totals: {
-    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
+totals: {
+    // Real account equity = what the broker actually reports (positions + cash, including margin)
+    // For margin accounts with negative cash, this correctly nets the margin loan
+    equity: totalValue > 0 ? totalValue : positionsValue,
+    positionsValue: positionsValue,  // gross position value (ignoring cash/margin) — for display
     cash: totalCash,
     buyingPower: totalBP,
   },
@@ -1283,8 +1286,9 @@ console.log(`DEBUG CASH for ${accountId}: rawCash=${rawCash} totalAmount=${total
     }
   }),
 
-  totals: {
-    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
+ totals: {
+    equity: totalValue > 0 ? totalValue : positionsValue,
+    positionsValue: positionsValue,
     cash: totalCash,
     buyingPower: totalBP,
   },
@@ -1941,8 +1945,9 @@ const summary = {
       buyingPower
     }
   }),
-  totals: {
-    equity: positionsValue > 0 ? positionsValue : Math.max(0, totalValue - totalCash),
+totals: {
+    equity: totalValue > 0 ? totalValue : positionsValue,
+    positionsValue: positionsValue,
     cash: totalCash,
     buyingPower: totalBP,
   },
@@ -2058,19 +2063,19 @@ app.post(/^\/webhook\/snaptrade\/?$/, async (req, res) => {
 });
 
 // Push notification helpers (extend later)
+// Push notification helpers (extend later)
 async function sendPortfolioUpdateNotification(userId: string, summary: any) {
   try {
-    // Look up device token from your users DB
+    // Look up device tokens from device_tokens table
     const result = await pool.query(
-      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
+      'SELECT device_token FROM device_tokens WHERE user_id = $1',
       [userId]
     );
-    const token = result.rows[0]?.device_token;
-    if (!token) return;
+    const tokens = result.rows.map(r => r.device_token).filter(Boolean);
+    if (tokens.length === 0) return;
 
-    // Use your existing apnProvider if available
-    console.log(`📱 Would send push to ${userId}: portfolio updated`);
-    // TODO: wire to your apnProvider from auth backend
+    console.log(`📱 Would send portfolio push to ${userId} (${tokens.length} device(s)) — not yet implemented`);
+    // TODO: wire to apnProvider when portfolio-update pushes are ready
   } catch (e) {
     console.warn('Could not send portfolio push:', e);
   }
@@ -2079,12 +2084,12 @@ async function sendPortfolioUpdateNotification(userId: string, summary: any) {
 async function sendConnectionBrokenNotification(userId: string) {
   try {
     const result = await pool.query(
-      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
+      'SELECT device_token FROM device_tokens WHERE user_id = $1',
       [userId]
     );
-    const token = result.rows[0]?.device_token;
-    if (!token) return;
-    console.log(`📱 Would send push to ${userId}: broker connection broken`);
+    const tokens = result.rows.map(r => r.device_token).filter(Boolean);
+    if (tokens.length === 0) return;
+    console.log(`📱 Would send connection-broken push to ${userId} (${tokens.length} device(s))`);
   } catch (e) {
     console.warn('Could not send connection broken push:', e);
   }

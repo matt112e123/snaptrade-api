@@ -2736,6 +2736,133 @@ app.get('/pulse/status', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════
+// PRICE ALERT CHECKER — runs every minute
+// ════════════════════════════════════════════════════════════════════
+
+async function checkPriceAlerts() {
+  try {
+    // Get all active alerts
+    const alertsResult = await pool.query(
+      `SELECT * FROM price_alerts WHERE is_active = TRUE`
+    );
+    const alerts = alertsResult.rows;
+    if (alerts.length === 0) return;
+
+    // Group alerts by symbol so we only fetch each price once
+    const uniqueSymbols = [...new Set(alerts.map((a: any) => a.symbol))];
+    console.log(`🔍 Checking ${alerts.length} alerts across ${uniqueSymbols.length} symbols`);
+
+    // Fetch current price + daily % change for each symbol
+    const priceMap: Record<string, { price: number; pctChange: number }> = {};
+    await Promise.allSettled(
+      uniqueSymbols.map(async (symbol: string) => {
+        try {
+          const url = `https://snaptrade-api-da44.onrender.com/market/price/${symbol}`;
+          const resp = await fetch(url);
+          if (!resp.ok) return;
+          const data: any = await resp.json();
+          if (typeof data?.price === 'number') {
+            priceMap[symbol] = {
+              price: data.price,
+              pctChange: typeof data.changePercent === 'number' ? data.changePercent : 0,
+            };
+          }
+        } catch (e) {
+          console.warn(`Could not fetch price for ${symbol}`);
+        }
+      })
+    );
+
+    // Check each alert against current price
+    for (const alert of alerts) {
+      const market = priceMap[alert.symbol];
+      if (!market) continue; // skip if price fetch failed
+
+      const threshold = parseFloat(alert.threshold);
+      let shouldFire = false;
+      let reason = '';
+
+      switch (alert.condition_type) {
+        case 'above':
+          if (market.price >= threshold) {
+            shouldFire = true;
+            reason = `price $${market.price.toFixed(2)} reached $${threshold}`;
+          }
+          break;
+        case 'below':
+          if (market.price <= threshold) {
+            shouldFire = true;
+            reason = `price $${market.price.toFixed(2)} dropped below $${threshold}`;
+          }
+          break;
+        case 'pct_up':
+          if (market.pctChange >= threshold) {
+            shouldFire = true;
+            reason = `up ${market.pctChange.toFixed(2)}% today (threshold ${threshold}%)`;
+          }
+          break;
+        case 'pct_down':
+          if (market.pctChange <= -threshold) {
+            shouldFire = true;
+            reason = `down ${Math.abs(market.pctChange).toFixed(2)}% today (threshold ${threshold}%)`;
+          }
+          break;
+      }
+
+      if (!shouldFire) continue;
+
+      // Don't fire the same alert more than once per 24 hours
+      if (alert.last_triggered_at) {
+        const hoursSince = (Date.now() - new Date(alert.last_triggered_at).getTime()) / 1000 / 3600;
+        if (hoursSince < 24) {
+          continue; // already fired in last 24h, skip
+        }
+      }
+
+      console.log(`🚨 ALERT FIRED for ${alert.user_id}: ${alert.symbol} ${alert.condition_type} — ${reason}`);
+
+      // Mark as triggered
+      await pool.query(
+        `UPDATE price_alerts
+         SET last_triggered_at = NOW(), trigger_count = trigger_count + 1
+         WHERE id = $1`,
+        [alert.id]
+      );
+
+      // TODO Phase 2: send actual push notification here
+      await sendPriceAlertNotification(alert.user_id, alert.symbol, reason);
+    }
+  } catch (err: any) {
+    console.error('❌ Price alert checker error:', err);
+  }
+}
+
+// Placeholder push sender (Phase 2 will fill this in with real APNs)
+async function sendPriceAlertNotification(userId: string, symbol: string, reason: string) {
+  try {
+    const result = await pool.query(
+      'SELECT device_token FROM users WHERE snaptrade_user_id = $1 LIMIT 1',
+      [userId]
+    );
+    const token = result.rows[0]?.device_token;
+    if (!token) {
+      console.log(`📱 [no device token] Would push to ${userId}: ${symbol} — ${reason}`);
+      return;
+    }
+    console.log(`📱 [Phase 2 will send real push] ${userId}: ${symbol} — ${reason}`);
+  } catch (e) {
+    console.warn('Could not send price alert push:', e);
+  }
+}
+
+// Start the checker — runs every 60 seconds
+setInterval(checkPriceAlerts, 60 * 1000);
+console.log('⏰ Price alert checker scheduled — every 60s');
+
+// Also run once on startup so we don't wait a full minute
+setTimeout(checkPriceAlerts, 5000);
+
 /* ---------------------------- 404 last ---------------------------- */
 
 app.use((_req, res) => res.status(404).type("text/plain").send("Not found"));

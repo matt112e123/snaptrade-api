@@ -3024,28 +3024,6 @@ async function sendPriceAlertNotification(userId: string, symbol: string, reason
   }
 }
 
-
-// ════════════════════════════════════════════════════════════════════
-// TEST: manually fire a push to a user (debug only — remove before prod)
-// ════════════════════════════════════════════════════════════════════
-app.post('/test/push', async (req, res) => {
-  try {
-    const { userId, symbol, message } = req.body;
-    if (!userId) return res.status(400).json({ error: 'Missing userId' });
-
-    await sendPriceAlertNotification(
-      userId,
-      symbol || 'TEST',
-      message || 'This is a test push from TYGER'
-    );
-
-    res.json({ success: true, sentTo: userId });
-  } catch (err: any) {
-    console.error('❌ Test push error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // Replace these three lines:
 // setInterval(checkPriceAlerts, 60 * 1000);
 // console.log('⏰ Price alert checker scheduled — every 60s');

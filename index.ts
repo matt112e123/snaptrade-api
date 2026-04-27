@@ -3005,10 +3005,14 @@ async function sendPriceAlertNotification(userId: string, symbol: string, reason
 
     // Clean up dead tokens (Apple rejects them when user uninstalls app)
   // Clean up dead tokens (Apple rejects them when user uninstalls app)
-    for (const failure of response.failed as any[]) {
-      const reason = failure?.response?.reason;
-      const status = String(failure?.status ?? '');
-      if (status === '410' || reason === 'BadDeviceToken' || reason === 'Unregistered') {
+  for (const failure of response.failed as any[]) {
+  const reason = failure?.response?.reason;
+  const status = String(failure?.status ?? '');
+  
+  // ADD THIS LINE:
+  console.log(`❌ APNs failure: status=${status} reason=${reason} device=${String(failure.device).substring(0, 16)}...`);
+  
+  if (status === '410' || reason === 'BadDeviceToken' || reason === 'Unregistered') {
         console.log(`🧹 Removing dead token: ${String(failure.device).substring(0, 16)}...`);
         await pool.query('DELETE FROM device_tokens WHERE device_token = $1', [failure.device]);
       } else {
